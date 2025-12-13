@@ -4,6 +4,14 @@
 
 This fork extends SAM 3D Body with **FBXify**, a tool that allows you to export estimated poses as FBX files compatible with Unity, Mixamo, and other 3D animation tools. Upload images or videos to generate armature-only FBX files that can be retargeted to any MHR, Mixamo, or Unity character.
 
+## FBXify: Installation & Usage
+
+This repository includes **FBXify**, a web-based tool that converts SAM 3D Body pose estimates into FBX files. The tool allows you to upload images or videos, automatically detects the closest person, and exports an armature-only FBX file that can be retargeted to MHR, Mixamo, or Unity characters.
+
+### Acknowledgments
+
+Special thanks to [tori29umai0123](https://github.com/tori29umai0123) for their starter code that inspired this fork. See the original GitHub issue: [A script that outputs a human animation fbx file that can be loaded in Unity (incomplete) #66](https://github.com/facebookresearch/sam-3d-body/issues/66).
+
 ## Mapping
 
 FBXify supports remapping poses to different rig formats. For detailed information on how to configure mappings for custom rigs, see the [Mapping Guide](fbxify/Mapping_Guide.md).
@@ -118,14 +126,6 @@ SAM 3D Body is one part of SAM 3D, a pair of models for object and human mesh re
 ## Latest updates
 
 **11/19/2025** -- Checkpoints Launched, Dataset Released, Web Demo and Paper are out!
-
-## FBXify: Installation & Usage
-
-This repository includes **FBXify**, a web-based tool that converts SAM 3D Body pose estimates into FBX files. The tool allows you to upload images or videos, automatically detects the closest person, and exports an armature-only FBX file that can be retargeted to MHR, Mixamo, or Unity characters.
-
-### Acknowledgments
-
-Special thanks to [tori29umai0123](https://github.com/tori29umai0123) for their starter code that inspired this fork. See the original GitHub issue: [A script that outputs a human animation fbx file that can be loaded in Unity (incomplete) #66](https://github.com/facebookresearch/sam-3d-body/issues/66).
 
 ### Installation
 

@@ -13,7 +13,7 @@ This fork extends SAM 3D Body with **FBXify**, a tool that allows you to export 
 3. **Start the server:**
    - Linux/Mac: `./start_server.sh`
    - Windows: `./start_server.bat`
-4. **Access the web interface** - The server will automatically open your browser to `http://localhost:7444`
+4. **Access the web interface** - Open your browser to `http://localhost:7444`
 5. **Upload and process** - Upload images or videos, then download the generated FBX files
 
 ### Features

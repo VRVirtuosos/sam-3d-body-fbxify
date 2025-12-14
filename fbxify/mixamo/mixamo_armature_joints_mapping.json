@@ -52,7 +52,7 @@
                                 "method": "keypoint_with_global_rot_roll",
                                 "point_reference": ["left_wrist", "left_middle_finger_third_joint"],
                                 "roll_reference": "l_wrist",
-                                "roll_additional_from_reference": 0,
+                                "roll_additional_from_reference": -90,
                                 "children": [
                                   {
                                     "name": "mixamorig:LeftHandIndex1",

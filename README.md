@@ -1,5 +1,3 @@
-<<<<<<< Updated upstream
-=======
 ## FBXify: Export to FBX Format
 
 ![FBX Export Example](example_fbx.gif?raw=true)

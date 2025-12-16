@@ -25,16 +25,30 @@ MHR_EXTENDED_KEYPOINT_INDEX = {
 def get_profile(profile_name):
     return PROFILES[profile_name]
 
-def _to_serializable(obj):
+def to_serializable(obj, _seen=None):
     """Recursively convert numpy types to plain Python for JSON dumping."""
+    if _seen is None:
+        _seen = set()
+    
+    # Check for circular references
+    obj_id = id(obj)
+    if obj_id in _seen:
+        return f"<circular reference to {type(obj).__name__}>"
+    
     if isinstance(obj, np.ndarray):
         return obj.tolist()
     if isinstance(obj, np.generic):
         return obj.item()
     if isinstance(obj, dict):
-        return {k: _to_serializable(v) for k, v in obj.items()}
+        _seen.add(obj_id)
+        result = {k: to_serializable(v, _seen) for k, v in obj.items()}
+        _seen.remove(obj_id)
+        return result
     if isinstance(obj, (list, tuple)):
-        return [_to_serializable(v) for v in obj]
+        _seen.add(obj_id)
+        result = [to_serializable(v, _seen) for v in obj]
+        _seen.remove(obj_id)
+        return result
     return obj
 
 
@@ -55,7 +69,7 @@ def export_to_fbx(metadata, joint_mapping, root_motion,rest_pose, faces):
         with open(joint_mapping_path, "w") as f:
             json.dump({"joint_mapping": joint_mapping}, f)
         with open(root_motion_path, "w") as f:
-            json.dump({"root_motion": _to_serializable(root_motion)}, f)
+            json.dump({"root_motion": to_serializable(root_motion)}, f)
         with open(rest_pose_path, "w") as f:
             json.dump({"rest_pose": rest_pose}, f)
         with open(faces_path, "w") as f:

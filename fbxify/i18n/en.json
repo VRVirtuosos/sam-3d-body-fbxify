@@ -28,11 +28,20 @@
     "sample_number_info": "Number of images to sample and average for FOV estimation",
     "use_root_motion": "🧭 Apply Root Motion",
     "generate_btn": "🚀 Generate FBX",
-    "output_file": "📦 Generated FBX (Multiple Allowed)"
+    "output_files": "📦 Generated Files",
+    "developer_options": "Developer Options",
+    "create_visualization": "Create Visualization",
+    "debug_save_results": "💾 Save Results for Re-export",
+    "debug_saved_timestamps": "📁 Saved Timestamps",
+    "debug_reexport_btn": "🔄 Re-export from Saved",
+    "debug_clear_btn": "🗑️ Clear All Saved Results",
+    "debug_no_saved_results": "No saved results"
   },
   "progress": {
     "processing_keyframes": "📦 Processing keyframes...",
-    "processing_person": "📦 Processing person..."
+    "processing_person": "📦 Processing person...",
+    "creating_visualization": "🎨 Creating visualization...",
+    "reexporting": "🔄 Re-exporting from saved results..."
   },
   "errors": {
     "error_occurred": "An error occurred ({error_type}): {error_msg}",

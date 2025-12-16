@@ -359,7 +359,7 @@ class PoseEstimator:
         joint_to_bone_mappings=None,
         root_motions=None,
         num_people=1,
-        bboxes=None) -> list[dict]:
+        bboxes=None):
         """
         Process a single frame and populate joint_to_bone_mapping for the given keyframe_index.
         
@@ -440,10 +440,13 @@ class PoseEstimator:
             self.populate_joint_mapping(joint_to_bone_mapping, joint_rotations, joint_coords, keypoints_3d, keyframe_index)
 
             root_motion.append({
-                "global_rot": convert_to_blender_coords(outputs["global_rot"]),
-                "pred_cam_t": convert_to_blender_coords(outputs["pred_cam_t"]), # colmap can and should be used to reverse this, assuming both camera and person are moving. But we assume static camera as far as outputs are concerned
+                "global_rot": outputs["global_rot"],
+                "pred_cam_t": outputs["pred_cam_t"], # colmap can and should be used to reverse this, assuming both camera and person are moving. But we assume static camera as far as outputs are concerned
             })
-            
+
+            print(f"pred_cam_t: {outputs['pred_cam_t']}")
+            print(f"global_rot: {outputs['global_rot']}")
+
             # vertices = np.array([convert_to_blender_coords(v) for v in vertices]) # TODO: Not sure what to do with this for now - we're armature only
         
             all_results[id] = {
@@ -453,7 +456,7 @@ class PoseEstimator:
                 # "keypoints_3d": keypoints_3d.tolist(), # Not used downstream, maybe eventually?
             }
 
-        return all_results
+        return all_results, outputs_raw
 
 
     def get_joint_to_bone_mapping(self, profile_name, use_cache=True):
@@ -533,8 +536,8 @@ class PoseEstimator:
             w = float(bbox_tuple[3])
             h = float(bbox_tuple[4])
             # Convert to xyxy format: [x1, y1, w, h]
-            bboxes_xyxy.append([x1, y1, w, h])
-            # bboxes_xyxy.append([x1, y1, x1+w, y1+h]) # GPT insists that sam-3d-body expects [x1, y1, x2, y2] format but console outputs suggest otherwise
+            # bboxes_xyxy.append([x1, y1, w, h]) 
+            bboxes_xyxy.append([x1, y1, x1+w, y1+h])
         
         return np.array(bboxes_xyxy, dtype=np.float32)
 

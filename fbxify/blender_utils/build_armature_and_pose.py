@@ -210,7 +210,6 @@ def reset_pose_bones(blender_pose_bones):
         p.matrix_basis.identity()
     bpy.context.view_layer.update()
 
-
 # set frame 0 as the tpose to preserve the rest pose
 bpy.context.scene.frame_set(0)
 reset_pose_bones(blender_pose_bones)
@@ -450,11 +449,28 @@ bpy.ops.object.mode_set(mode="OBJECT")
 if len(root_motion) > 0: # root motion can be passed empty, if the user doesn't want root motion
     # In object mode, use root_motion, which is a list of global rotation euler angles and camera translation vectors
     # apply keyframes to the armature, not any bone
+    arm_obj.rotation_mode = 'XYZ'
     for frame_idx, root_motion_entry in enumerate(root_motion, start=1):
-        arm_obj.rotation_euler = tuple(root_motion_entry["global_rot"])
-        # Convert camera translation to Vector before adding
+
+        # Convert from Y-up (SAM) to Z-up (Blender)
         cam_translation = root_motion_entry["pred_cam_t"]
-        arm_obj.matrix_world.translation = Vector(cam_translation)
+        cam_translation_blender = [
+            cam_translation[0],   # X stays X
+            -cam_translation[2],  # Z becomes -Y (forward/back)
+            cam_translation[1]    # Y becomes Z (up)
+        ]
+        arm_obj.matrix_world.translation = Vector(cam_translation_blender)
+
+        # Convert global_rot from Y-up to Z-up
+        # Apply the 90° X rotation that converts Y-up to Z-up
+        global_rot = root_motion_entry["global_rot"]
+        arm_obj.rotation_euler = (
+            global_rot[0] + math.pi/2,  # Add base 90° X rotation
+            global_rot[1], 
+            global_rot[2]
+        )
+
+        print(f"arm_obj.rotation_euler is {arm_obj.rotation_euler}")
 
         arm_obj.keyframe_insert(data_path="location", frame=frame_idx)
         arm_obj.keyframe_insert(data_path="rotation_euler", frame=frame_idx)
@@ -473,7 +489,9 @@ bpy.ops.object.mode_set(mode="OBJECT")
 bpy.context.scene.frame_set(0)
 
 # After we've set all the rotations, we should rotate the entire armature to 90,0,0 (degrees) so that the rig "stands up" in blender
+arm_obj.location = Vector((0, 0, 0))
 arm_obj.rotation_euler = (math.pi/2, 0, 0)
+arm_obj.keyframe_insert(data_path="location", frame=0)
 arm_obj.keyframe_insert(data_path="rotation_euler", frame=0)
 
 bpy.ops.object.select_all(action='DESELECT')

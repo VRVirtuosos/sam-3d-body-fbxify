@@ -6,6 +6,8 @@ __pycache__/
 
 # Used for faster docker build and runs
 /cache/
+/blender_debug/
+/temp/
 
 # C extensions
 *.so

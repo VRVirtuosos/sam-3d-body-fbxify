@@ -26,6 +26,8 @@ This fork extends SAM 3D Body with **FBXify**, a tool that allows you to export 
 - **Video processing:** Either automatically detects the closest person or allows bbox submitting to applies all keyframes to create an action for each person passed
 - **Image processing:** Single frame pose estimation and export
 - **Web-based interface:** Easy-to-use Gradio interface for uploading and processing files
+- **Integration support for outputs from [BoxMOT](https://github.com/mikel-brostrom/boxmot), [gta-link](https://github.com/sjc042/gta-link) and [colmap](https://github.com/colmap/colmap):** Use outputs from these repos to save computation time by supplying your own bboxes or camera intrinsics
+- **Mocap-style refinement:** Configurable refinement methods to try to smooth videos into better blender actions. See `fbxify/refinement/presets` for examples.
 
 Note: The exported FBX files contain only the armature (skeleton), not the mesh. You can retarget or directly move the action to any MHR, Mixamo, or Unity character.
 
@@ -68,10 +70,11 @@ For complete instructions, see [fbxify/Mapping_Guide.md](fbxify/Mapping_Guide.md
 
 Future improvements planned for FBXify:
 
-1. Smoothen the mocap data to prevent shakiness
-2. Fix some remaining artifacts
-3. Add option to scale the armature based on returned values
-4. Rig an MHR mesh to the mixamo/unity rigs
+1. Add option to scale the armature based on estimator returned values
+2. Rig an MHR mesh to the mixamo/unity rigs
+3. Complete CLI to allow for external docker orchestrator commands
+4. Facial animation integration (MHR specific maybe?)
+5. Camera extrinsics
 
 # SAM 3D
 

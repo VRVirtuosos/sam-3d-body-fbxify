@@ -56,7 +56,8 @@
         "hands": "Hands",
         "fingers": "Fingers",
         "head": "Head",
-        "legs": "Legs"
+        "legs": "Legs",
+        "default": "Default"
       },
       "max_pos_speed": "Max Positional Speed",
       "max_pos_speed_info": "Maximum positional speed (units/sec) for spike detection",
@@ -82,7 +83,9 @@
       "root_cutoff_xy_hz": "Root Cutoff XY (Hz)",
       "root_cutoff_xy_hz_info": "Cutoff frequency for horizontal (XY) root motion",
       "root_cutoff_z_hz": "Root Cutoff Z (Hz)",
-      "root_cutoff_z_hz_info": "Cutoff frequency for vertical (Z) root motion"
+      "root_cutoff_z_hz_info": "Cutoff frequency for vertical (Z) root motion",
+      "interpolate_missing_keyframes": "Interpolate Missing Keyframes",
+      "interpolate_missing_keyframes_info": "When enabled, missing frames (where no people were detected) will be interpolated using slerp for rotations and linear interpolation for vectors. When disabled, missing frames are skipped during refinement."
     }
   },
   "progress": {

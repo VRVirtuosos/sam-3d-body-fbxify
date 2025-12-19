@@ -15,6 +15,7 @@ from fbxify.refinement.profiles.hands_profile import HANDS_PROFILE
 from fbxify.refinement.profiles.fingers_profile import FINGERS_PROFILE
 from fbxify.refinement.profiles.head_profile import HEAD_PROFILE
 from fbxify.refinement.profiles.legs_profile import LEGS_PROFILE
+from fbxify.refinement.profiles.default_profile import DEFAULT_PROFILE
 from fbxify.refinement.refinement_config import RefinementConfig
 from fbxify.i18n import Translator
 
@@ -157,6 +158,7 @@ def create_filter_profile_ui(profile: FilterProfile, section_name: str, translat
 
 def build_refinement_config_from_gui(
     enabled: bool,
+    interpolate_missing_keyframes: bool,
     translator: Translator,
     # Root profile values
     root_max_pos_speed, root_max_pos_accel, root_max_ang_speed_deg, root_max_ang_accel_deg,
@@ -174,6 +176,9 @@ def build_refinement_config_from_gui(
     # Legs profile values
     legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
     legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+    # Default profile values
+    default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
+    default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
 ) -> Optional[RefinementConfig]:
     """
     Build a RefinementConfig from GUI values.
@@ -258,20 +263,28 @@ def build_refinement_config_from_gui(
         'one_euro_d_cutoff': legs_one_euro_d_cutoff,
     }
     
+    default_values = {
+        'max_pos_speed': default_max_pos_speed, 'max_pos_accel': default_max_pos_accel,
+        'max_ang_speed_deg': default_max_ang_speed_deg, 'max_ang_accel_deg': default_max_ang_accel_deg,
+        'method': default_method, 'cutoff_hz': default_cutoff_hz,
+        'one_euro_min_cutoff': default_one_euro_min_cutoff, 'one_euro_beta': default_one_euro_beta,
+        'one_euro_d_cutoff': default_one_euro_d_cutoff,
+    }
+    
     config = RefinementConfig()
-    config.fps = 30.0
     config.profiles = {
         "root": create_profile(root_values, is_root=True),
         "*hand*": create_profile(hands_values, is_root=False),
         "*finger*": create_profile(fingers_values, is_root=False),
         "*head*": create_profile(head_values, is_root=False),
         "*leg*": create_profile(legs_values, is_root=False),
-        "*": FilterProfile(),   # default
+        "*": create_profile(default_values, is_root=False),   # default
     }
     config.do_spike_fix = True
     config.do_rotation_smoothing = True
     config.do_vector_smoothing = True
     config.do_root_motion_fix = True
+    config.do_interpolate_missing_keyframes = interpolate_missing_keyframes
     
     return config
 
@@ -331,11 +344,18 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
 
         # Global controls
         with gr.Row():
-            refinement_enabled = gr.Checkbox(
-                label=translator.t("ui.refinement.enabled"),
-                value=True,
-                info=translator.t("ui.refinement.enabled_info")
-            )
+            with gr.Column():
+                refinement_enabled = gr.Checkbox(
+                    label=translator.t("ui.refinement.enabled"),
+                    value=True,
+                    info=translator.t("ui.refinement.enabled_info")
+                )
+            
+                interpolate_missing_keyframes = gr.Checkbox(
+                    label=translator.t("ui.refinement.interpolate_missing_keyframes"),
+                    value=False,
+                    info=translator.t("ui.refinement.interpolate_missing_keyframes_info")
+                )
             
             config_file_upload = gr.File(
                 label=translator.t("ui.refinement.load_config"),
@@ -399,6 +419,15 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
     )
     profile_components["legs"] = legs_components
     
+    # Default profile
+    default_components = create_filter_profile_ui(
+        DEFAULT_PROFILE, 
+        translator.t("ui.refinement.sections.default"), 
+        translator,
+        is_root=False
+    )
+    profile_components["default"] = default_components
+    
     # Wire up method change handlers for each profile
     for profile_name, components in profile_components.items():
         if 'method' in components:
@@ -422,6 +451,7 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
     # Save configuration function
     def save_configuration(
         enabled: bool,
+        interpolate_missing_keyframes: bool,
         # Root profile values
         root_max_pos_speed, root_max_pos_accel, root_max_ang_speed_deg, root_max_ang_accel_deg,
         root_method, root_cutoff_hz, root_one_euro_min_cutoff, root_one_euro_beta, root_one_euro_d_cutoff,
@@ -438,6 +468,9 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         # Legs profile values
         legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
         legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+        # Default profile values
+        default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
+        default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
     ) -> str:
         """Save current configuration to JSON."""
         def translate_method_to_internal(method_str):
@@ -516,21 +549,29 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
             'one_euro_d_cutoff': legs_one_euro_d_cutoff,
         }
         
+        default_values = {
+            'max_pos_speed': default_max_pos_speed, 'max_pos_accel': default_max_pos_accel,
+            'max_ang_speed_deg': default_max_ang_speed_deg, 'max_ang_accel_deg': default_max_ang_accel_deg,
+            'method': default_method, 'cutoff_hz': default_cutoff_hz,
+            'one_euro_min_cutoff': default_one_euro_min_cutoff, 'one_euro_beta': default_one_euro_beta,
+            'one_euro_d_cutoff': default_one_euro_d_cutoff,
+        }
+        
         config = {
             "enabled": enabled,
-            "fps": 30.0,
             "profiles": {
                 "root": create_profile_dict(root_values, is_root=True),
                 "*hand*": create_profile_dict(hands_values, is_root=False),
                 "*finger*": create_profile_dict(fingers_values, is_root=False),
                 "*head*": create_profile_dict(head_values, is_root=False),
                 "*leg*": create_profile_dict(legs_values, is_root=False),
-                "*": asdict(FilterProfile()),
+                "*": create_profile_dict(default_values, is_root=False),
             },
             "do_spike_fix": True,
             "do_rotation_smoothing": True,
             "do_vector_smoothing": True,
             "do_root_motion_fix": True,
+            "do_interpolate_missing_keyframes": interpolate_missing_keyframes,
         }
         
         # Create a temporary file with the JSON
@@ -540,7 +581,7 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         return temp_file.name
     
     # Collect all inputs for save function
-    save_inputs = [refinement_enabled]
+    save_inputs = [refinement_enabled, interpolate_missing_keyframes]
     
     # Add root profile inputs
     save_inputs.extend([
@@ -588,6 +629,15 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         legs_components['one_euro_d_cutoff'],
     ])
     
+    # Add default profile inputs
+    save_inputs.extend([
+        default_components['max_pos_speed'], default_components['max_pos_accel'],
+        default_components['max_ang_speed_deg'], default_components['max_ang_accel_deg'],
+        default_components['method'], default_components['cutoff_hz'],
+        default_components['one_euro_min_cutoff'], default_components['one_euro_beta'],
+        default_components['one_euro_d_cutoff'],
+    ])
+    
     # Wire up save button - show config file download when clicked
     def save_and_show_config(*args):
         """Save configuration and show the download file."""
@@ -617,6 +667,9 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         
         # Update enabled checkbox
         updates.append(gr.update(value=config.get("enabled", True)))
+        
+        # Update interpolate_missing_keyframes checkbox
+        updates.append(gr.update(value=config.get("do_interpolate_missing_keyframes", False)))
         
         # Update each profile
         profiles = config.get("profiles", {})
@@ -676,10 +729,15 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
                     'method', 'cutoff_hz', 'one_euro_min_cutoff', 'one_euro_beta', 'one_euro_d_cutoff']
         updates.extend(get_profile_updates("*leg*", legs_keys, is_root=False))
         
+        # Default profile
+        default_keys = ['max_pos_speed', 'max_pos_accel', 'max_ang_speed_deg', 'max_ang_accel_deg',
+                       'method', 'cutoff_hz', 'one_euro_min_cutoff', 'one_euro_beta', 'one_euro_d_cutoff']
+        updates.extend(get_profile_updates("*", default_keys, is_root=False))
+        
         return updates
     
     # Wire up load file
-    load_outputs = [refinement_enabled] + save_inputs[1:]  # All inputs except enabled (which is first)
+    load_outputs = [refinement_enabled, interpolate_missing_keyframes] + save_inputs[2:]  # enabled, interpolate_missing_keyframes, then all profile fields
     config_file_upload.change(
         fn=load_configuration,
         inputs=[config_file_upload],
@@ -689,6 +747,7 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
     # Return components dictionary for integration
     return {
         "refinement_enabled": refinement_enabled,
+        "interpolate_missing_keyframes": interpolate_missing_keyframes,
         "config_file_upload": config_file_upload,
         "config_file_download": config_file_download,
         "save_config_btn": save_config_btn,

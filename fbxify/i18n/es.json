@@ -56,7 +56,8 @@
         "hands": "Manos",
         "fingers": "Dedos",
         "head": "Cabeza",
-        "legs": "Piernas"
+        "legs": "Piernas",
+        "default": "Por Defecto"
       },
       "max_pos_speed": "Velocidad Posicional Máxima",
       "max_pos_speed_info": "Velocidad posicional máxima (unidades/seg) para detección de picos",
@@ -82,7 +83,9 @@
       "root_cutoff_xy_hz": "Corte Raíz XY (Hz)",
       "root_cutoff_xy_hz_info": "Frecuencia de corte para movimiento de raíz horizontal (XY)",
       "root_cutoff_z_hz": "Corte Raíz Z (Hz)",
-      "root_cutoff_z_hz_info": "Frecuencia de corte para movimiento de raíz vertical (Z)"
+      "root_cutoff_z_hz_info": "Frecuencia de corte para movimiento de raíz vertical (Z)",
+      "interpolate_missing_keyframes": "Interpolar fotogramas clave faltantes",
+      "interpolate_missing_keyframes_info": "Cuando está habilitado, los fotogramas faltantes (donde no se detectaron personas) se interpolarán usando slerp para rotaciones e interpolación lineal para vectores. Cuando está deshabilitado, los fotogramas faltantes se omiten durante el refinamiento."
     }
   },
   "progress": {

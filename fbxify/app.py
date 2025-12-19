@@ -64,7 +64,7 @@ def create_app(manager: FbxifyManager):
                 fov_file, sample_number, use_root_motion, create_visualization, 
                 debug_save_results, 
                 # Refinement parameters
-                refinement_enabled,
+                refinement_enabled, interpolate_missing_keyframes,
                 root_max_pos_speed, root_max_pos_accel, root_max_ang_speed_deg, root_max_ang_accel_deg,
                 root_method, root_cutoff_hz, root_one_euro_min_cutoff, root_one_euro_beta, root_one_euro_d_cutoff,
                 root_cutoff_xy_hz, root_cutoff_z_hz,
@@ -76,6 +76,8 @@ def create_app(manager: FbxifyManager):
                 head_method, head_cutoff_hz, head_one_euro_min_cutoff, head_one_euro_beta, head_one_euro_d_cutoff,
                 legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
                 legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+                default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
+                default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
                 progress=None):
         """Process image or video file using FbxifyManager."""
         output_files = []
@@ -109,8 +111,9 @@ def create_app(manager: FbxifyManager):
             file_ext = os.path.splitext(file_path)[1].lower()
             is_video = file_ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm']
             
+            fps = 30.0  # Default FPS for images
             if is_video:
-                frame_paths, temp_dir = manager.prepare_video(file_path)
+                frame_paths, temp_dir, fps = manager.prepare_video(file_path)
             else:
                 frame_paths = [file_path]
                 temp_dir = None
@@ -131,6 +134,7 @@ def create_app(manager: FbxifyManager):
                 bbox_dict,
                 use_root_motion,
                 create_visualization,
+                fps,
                 progress_callback
             )
 
@@ -141,6 +145,7 @@ def create_app(manager: FbxifyManager):
             # Build refinement config from GUI values
             refinement_config = build_refinement_config_from_gui(
                 refinement_enabled,
+                interpolate_missing_keyframes,
                 translator,
                 root_max_pos_speed, root_max_pos_accel, root_max_ang_speed_deg, root_max_ang_accel_deg,
                 root_method, root_cutoff_hz, root_one_euro_min_cutoff, root_one_euro_beta, root_one_euro_d_cutoff,
@@ -153,6 +158,8 @@ def create_app(manager: FbxifyManager):
                 head_method, head_cutoff_hz, head_one_euro_min_cutoff, head_one_euro_beta, head_one_euro_d_cutoff,
                 legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
                 legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+                default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
+                default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
             )
 
             # Apply refinement if enabled
@@ -177,6 +184,7 @@ def create_app(manager: FbxifyManager):
                 process_result.joint_to_bone_mappings,
                 process_result.root_motions,
                 process_result.frame_paths,
+                process_result.fps,
                 export_progress
             )
             output_files.extend(fbx_paths)
@@ -210,7 +218,7 @@ def create_app(manager: FbxifyManager):
 
     def debug_reexport_results(timestamp, use_root_motion, create_visualization,
                                 # Refinement parameters
-                                refinement_enabled,
+                                refinement_enabled, interpolate_missing_keyframes,
                                 root_max_pos_speed, root_max_pos_accel, root_max_ang_speed_deg, root_max_ang_accel_deg,
                                 root_method, root_cutoff_hz, root_one_euro_min_cutoff, root_one_euro_beta, root_one_euro_d_cutoff,
                                 root_cutoff_xy_hz, root_cutoff_z_hz,
@@ -222,6 +230,8 @@ def create_app(manager: FbxifyManager):
                                 head_method, head_cutoff_hz, head_one_euro_min_cutoff, head_one_euro_beta, head_one_euro_d_cutoff,
                                 legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
                                 legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+                                default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
+                                default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
                                 progress=None):
         """Re-export results from saved debug data."""
         if timestamp is None or timestamp == "" or timestamp == translator.t("ui.debug_no_saved_results"):
@@ -234,6 +244,7 @@ def create_app(manager: FbxifyManager):
         # Build refinement config from GUI values
         refinement_config = build_refinement_config_from_gui(
             refinement_enabled,
+            interpolate_missing_keyframes,
             translator,
             root_max_pos_speed, root_max_pos_accel, root_max_ang_speed_deg, root_max_ang_accel_deg,
             root_method, root_cutoff_hz, root_one_euro_min_cutoff, root_one_euro_beta, root_one_euro_d_cutoff,
@@ -246,6 +257,8 @@ def create_app(manager: FbxifyManager):
             head_method, head_cutoff_hz, head_one_euro_min_cutoff, head_one_euro_beta, head_one_euro_d_cutoff,
             legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
             legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+            default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
+            default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
         )
 
         output_files = manager.reexport_debug_results(
@@ -342,6 +355,7 @@ def create_app(manager: FbxifyManager):
         # Collect refinement inputs
         refinement_inputs = [
             refinement_components['refinement_enabled'],
+            refinement_components['interpolate_missing_keyframes'],
             refinement_components['profile_components']['root']['max_pos_speed'],
             refinement_components['profile_components']['root']['max_pos_accel'],
             refinement_components['profile_components']['root']['max_ang_speed_deg'],
@@ -389,6 +403,15 @@ def create_app(manager: FbxifyManager):
             refinement_components['profile_components']['legs']['one_euro_min_cutoff'],
             refinement_components['profile_components']['legs']['one_euro_beta'],
             refinement_components['profile_components']['legs']['one_euro_d_cutoff'],
+            refinement_components['profile_components']['default']['max_pos_speed'],
+            refinement_components['profile_components']['default']['max_pos_accel'],
+            refinement_components['profile_components']['default']['max_ang_speed_deg'],
+            refinement_components['profile_components']['default']['max_ang_accel_deg'],
+            refinement_components['profile_components']['default']['method'],
+            refinement_components['profile_components']['default']['cutoff_hz'],
+            refinement_components['profile_components']['default']['one_euro_min_cutoff'],
+            refinement_components['profile_components']['default']['one_euro_beta'],
+            refinement_components['profile_components']['default']['one_euro_d_cutoff'],
         ]
 
         # Generate button

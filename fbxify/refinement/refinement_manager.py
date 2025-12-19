@@ -456,15 +456,15 @@ class RefinementManager:
     """
     RefinementManager is a class that applies refinement and mocap-style smoothing to the animation.
     """
-    def __init__(self, config: RefinementConfig = None):
+    def __init__(self, config: RefinementConfig = None, fps: float = 30.0):
         if config is None:
             # use default config
             config = RefinementConfig()
-        self.configure(config)
+        self.configure(config, fps)
 
-    def configure(self, config: RefinementConfig):
+    def configure(self, config: RefinementConfig, fps: float = 30.0):
         self.config = config
-        self.dt = 1.0 / config.fps  # time step in seconds
+        self.dt = 1.0 / fps  # time step in seconds
     
     def _calculate_vector_change_percent(self, v_original, v_refined):
         """
@@ -595,6 +595,116 @@ class RefinementManager:
 
         return root_node, root_motion
 
+    def _interpolate_missing_frames(self, series, is_rotation=False):
+        """
+        Interpolate None values in a series.
+        - series: List of values (rotations [3][3] or vectors [3]) with possible None entries
+        - is_rotation: If True, use slerp; if False, use linear interpolation
+        - Returns: Series with None values replaced by interpolated values
+        """
+        # Check if there are any None values
+        has_none = any(x is None for x in series)
+        if not has_none:
+            return series
+        
+        # Make a copy to avoid modifying the original
+        result = series[:]
+        T = len(result)
+        
+        # Find all valid indices
+        valid_indices = [i for i in range(T) if result[i] is not None]
+        
+        # If all frames are None, return original unchanged
+        if len(valid_indices) == 0:
+            return result
+        
+        # If only one valid frame, use it for all None values
+        if len(valid_indices) == 1:
+            valid_idx = valid_indices[0]
+            valid_value = result[valid_idx]
+            for i in range(T):
+                if result[i] is None:
+                    if is_rotation:
+                        # Deep copy rotation matrix
+                        result[i] = [[valid_value[j][k] for k in range(3)] for j in range(3)]
+                    else:
+                        # Deep copy vector
+                        result[i] = list(valid_value)
+            return result
+        
+        # Find sequences of None values and interpolate
+        i = 0
+        while i < T:
+            if result[i] is None:
+                # Find the start of this None sequence
+                start_none = i
+                # Find the end of this None sequence
+                while i < T and result[i] is None:
+                    i += 1
+                end_none = i
+                
+                # Find the last valid frame before this sequence
+                prev_valid_idx = None
+                for j in range(start_none - 1, -1, -1):
+                    if result[j] is not None:
+                        prev_valid_idx = j
+                        break
+                
+                # Find the first valid frame after this sequence
+                next_valid_idx = None
+                for j in range(end_none, T):
+                    if result[j] is not None:
+                        next_valid_idx = j
+                        break
+                
+                # Interpolate each None in the sequence
+                if prev_valid_idx is not None and next_valid_idx is not None:
+                    # We have both previous and next valid frames
+                    prev_value = result[prev_valid_idx]
+                    next_value = result[next_valid_idx]
+                    
+                    for j in range(start_none, end_none):
+                        # Calculate interpolation parameter
+                        # t = 0 at prev_valid_idx, t = 1 at next_valid_idx
+                        t = (j - prev_valid_idx) / (next_valid_idx - prev_valid_idx)
+                        
+                        if is_rotation:
+                            # Convert matrices to quaternions, slerp, convert back
+                            q1 = quat_from_R(prev_value)
+                            q2 = quat_from_R(next_value)
+                            q_interp = slerp(q1, q2, t)
+                            result[j] = R_from_quat(q_interp)
+                        else:
+                            # Linear interpolation for vectors
+                            result[j] = [
+                                prev_value[k] + t * (next_value[k] - prev_value[k])
+                                for k in range(3)
+                            ]
+                elif prev_valid_idx is not None:
+                    # Only previous valid frame (None at end)
+                    prev_value = result[prev_valid_idx]
+                    for j in range(start_none, end_none):
+                        if is_rotation:
+                            # Deep copy rotation matrix
+                            result[j] = [[prev_value[k][l] for l in range(3)] for k in range(3)]
+                        else:
+                            # Deep copy vector
+                            result[j] = list(prev_value)
+                elif next_valid_idx is not None:
+                    # Only next valid frame (None at start)
+                    next_value = result[next_valid_idx]
+                    for j in range(start_none, end_none):
+                        if is_rotation:
+                            # Deep copy rotation matrix
+                            result[j] = [[next_value[k][l] for l in range(3)] for k in range(3)]
+                        else:
+                            # Deep copy vector
+                            result[j] = list(next_value)
+            else:
+                i += 1
+        
+        return result
+
     def _refine_node_recursive(self, node):
         """
         Refine a node recursively.
@@ -634,6 +744,21 @@ class RefinementManager:
         return node
 
     def _process_vector_series(self, v_series, prof, bone_name=None):
+        # CRITICAL: Interpolation must happen FIRST, before any other processing
+        if self.config.do_interpolate_missing_keyframes:
+            # Interpolate missing frames before processing
+            v_series = self._interpolate_missing_frames(v_series, is_rotation=False)
+        else:
+            # Check for None values and return early if found
+            if any(v is None for v in v_series):
+                print(f"  Warning: Missing keyframes detected in {bone_name or 'vector series'}, skipping refinement (enable 'Interpolate Missing Keyframes' to interpolate)")
+                return v_series
+        
+        # Defensive check: ensure no None values remain before processing
+        if any(v is None for v in v_series):
+            print(f"  Error: None values still present in {bone_name or 'vector series'} after interpolation check, skipping refinement")
+            return v_series
+        
         v_original = [list(v) for v in v_series]  # Deep copy for comparison
         v = v_series[:]  # [T][3]
 
@@ -697,6 +822,17 @@ class RefinementManager:
 
     def _process_rotation_series(self, R_series, prof, bone_name=None):
         # R_series: [T][3][3]
+        
+        # CRITICAL: Interpolation must happen FIRST, before any other processing
+        if self.config.do_interpolate_missing_keyframes:
+            # Interpolate missing frames before processing
+            R_series = self._interpolate_missing_frames(R_series, is_rotation=True)
+        else:
+            # Check for None values and return early if found
+            if any(R is None for R in R_series):
+                print(f"  Warning: Missing keyframes detected in {bone_name or 'rotation series'}, skipping refinement (enable 'Interpolate Missing Keyframes' to interpolate)")
+                return R_series
+        
         R_original = [[[R[i][j] for j in range(3)] for i in range(3)] for R in R_series]  # Deep copy
         q = [quat_from_R(R) for R in R_series]   # [T] quats
         q = fix_quat_hemisphere(q)

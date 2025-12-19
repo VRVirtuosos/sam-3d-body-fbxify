@@ -239,9 +239,11 @@ def main():
     # Prepare video or image
     temp_dir = None
     try:
+        fps = 30.0  # Default FPS for images
         if is_video:
             print("Extracting frames from video...")
-            frame_paths, temp_dir = manager.prepare_video(args.input_file)
+            frame_paths, temp_dir, fps = manager.prepare_video(args.input_file)
+            print(f"Video FPS: {fps}")
         else:
             frame_paths = [args.input_file]
         
@@ -284,6 +286,7 @@ def main():
             bbox_dict,
             args.use_root_motion,
             args.create_visualization,
+            fps,
             progress_callback
         )
         
@@ -300,6 +303,7 @@ def main():
             process_result.joint_to_bone_mappings,
             process_result.root_motions,
             process_result.frame_paths,
+            process_result.fps,
             progress_callback
         )
         

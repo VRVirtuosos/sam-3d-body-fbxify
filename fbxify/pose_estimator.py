@@ -488,11 +488,12 @@ class PoseEstimator:
 
         return armature_rest_pose
 
-    def create_metadata(self, profile_name, id, num_keyframes=1):
+    def create_metadata(self, profile_name, id, num_keyframes=1, fps=30.0):
         return {
             "num_keyframes": num_keyframes,
             "id": id,
-            "profile_name": profile_name
+            "profile_name": profile_name,
+            "fps": fps
         }
 
     def _get_person_ids(self, bboxes):

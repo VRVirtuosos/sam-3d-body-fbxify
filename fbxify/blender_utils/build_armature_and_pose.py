@@ -28,6 +28,7 @@ with open(faces_path) as f:
 
 num_keyframes = metadata["num_keyframes"]
 profile_name = metadata["profile_name"]
+fps = metadata.get("fps", 30.0)  # Frame rate, default to 30.0 if not present
 armature_name = f"sam3d_body_{profile_name}_armature"
 
 # ------------------------------------------------------------------------
@@ -331,45 +332,36 @@ def calc_rotation_from_dir_and_mhr_roll(
 
 def get_rotation_direct_mapping(bone_dict, keyframe_index):
     if 'data' not in bone_dict or not isinstance(bone_dict['data'], dict):
-        print(f"  WARNING: [{bone_dict['name']}] has 'direct mapping' but no data found")
         return None # no data
 
     if 'rotation' not in bone_dict['data'] or not isinstance(bone_dict['data']['rotation'], list):
-        print(f"  WARNING: [{bone_dict['name']}] has 'direct mapping' but no rotation found")
         return None # no rotation
 
     if len(bone_dict['data']['rotation']) <= keyframe_index or bone_dict['data']['rotation'][keyframe_index] is None or \
         not isinstance(bone_dict['data']['rotation'][keyframe_index], list):
-        print(f"  WARNING: [{bone_dict['name']}] has 'direct mapping' but no rotation found for frame {keyframe_index + 1}")
         return None # no rotation
 
     return list_to_matrix(bone_dict['data']['rotation'][keyframe_index])
 
 def get_rotation_keypoint_with_global_rot_roll(bone_dict, keyframe_index):
     if 'data' not in bone_dict or not isinstance(bone_dict['data'], dict):
-        print(f"  WARNING: [{bone_dict['name']}] has 'keypoint with global rot roll' but no data found")
         return None # no data
 
     if 'dir_vector' not in bone_dict['data'] or not isinstance(bone_dict['data']['dir_vector'], list):
-        print(f"  WARNING: [{bone_dict['name']}] has 'keypoint with global rot roll' but no dir vector found")
         return None # no dir vector
 
     if 'roll_additional_from_reference' not in bone_dict or not isinstance(bone_dict['roll_additional_from_reference'], int):
-        print(f"  WARNING: [{bone_dict['name']}] has 'keypoint with global rot roll' but no roll pred global rotation reference found")
         return None # no roll pred global rotation reference
         
     if len(bone_dict['data']['dir_vector']) <= keyframe_index or bone_dict['data']['dir_vector'][keyframe_index] is None or \
         not isinstance(bone_dict['data']['dir_vector'][keyframe_index], list):
-        print(f"  WARNING: [{bone_dict['name']}] has 'keypoint with global rot roll' but no dir vector found for frame {keyframe_index + 1}")
         return None # no dir vector
 
     if 'roll_vector' not in bone_dict['data'] or not isinstance(bone_dict['data']['roll_vector'], list):
-        print(f"  WARNING: [{bone_dict['name']}] has 'keypoint with global rot roll' but no roll vector found")
         return None # no roll vector
 
     if len(bone_dict['data']['roll_vector']) <= keyframe_index or bone_dict['data']['roll_vector'][keyframe_index] is None or \
         not isinstance(bone_dict['data']['roll_vector'][keyframe_index], list):
-        print(f"  WARNING: [{bone_dict['name']}] has 'keypoint with global rot roll' but no roll vector found for frame {keyframe_index + 1}")
         return None # no roll vector
 
     dir_vector = bone_dict['data']['dir_vector'][keyframe_index]
@@ -405,6 +397,7 @@ def breadth_first_pose_application(joint_mapping, frame_idx):
     current_layer = [joint_mapping] # hips
 
     applied_bones = set()
+    missing_rotation_bones = []  # Collect bones with missing rotations
     while current_layer:
         next_layer = []
         for bone_dict in current_layer:
@@ -417,7 +410,7 @@ def breadth_first_pose_application(joint_mapping, frame_idx):
             R_global = get_rotation_from_mapping_method(bone_dict, frame_idx)
 
             if (R_global is None):
-                print(f"  WARNING: [{bone_dict['name']}] has no rotation found for frame {frame_idx + 1}")
+                missing_rotation_bones.append(bone_dict['name'])
             else:
                 set_pose_from_global_rotation(pbone, R_global)
                 applied_bones.add(bone_dict['name'])
@@ -428,6 +421,11 @@ def breadth_first_pose_application(joint_mapping, frame_idx):
 
         bpy.context.view_layer.update() # expensive update
         current_layer = next_layer
+
+    # Print grouped warning if there are missing rotations
+    if missing_rotation_bones:
+        bones_list = ", ".join(missing_rotation_bones)
+        print(f"  WARNING: No rotation found for frame {frame_idx + 1} on the following bones: [{bones_list}]")
 
     for bone in blender_pose_bones:
         bone.keyframe_insert("rotation_quaternion", frame=frame_idx + 1)

@@ -36,8 +36,8 @@ class TestRefinementProfiles(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.config = RefinementConfig()
-        self.config.fps = 30.0
-        self.manager = RefinementManager(self.config)
+        self.fps = 30.0
+        self.manager = RefinementManager(self.config, fps=self.fps)
 
     def test_root_profile_spike_fix_rotation(self):
         """Test that root profile fixes rotation spikes."""
@@ -86,11 +86,11 @@ class TestRefinementProfiles(unittest.TestCase):
         q_orig_4 = quat_from_R(rotation_series[4])
         dq_orig_45 = quat_mul(quat_inv(q_orig_4), q_orig_spike)
         orig_angle_45_rad = quat_angle(dq_orig_45)
-        orig_vel_deg_per_sec = rad2deg(orig_angle_45_rad) / (1.0 / self.config.fps)
+        orig_vel_deg_per_sec = rad2deg(orig_angle_45_rad) / (1.0 / self.fps)
         
         dq_ref_45 = quat_mul(quat_inv(q_refined_4), q_refined_5)
         ref_angle_45_rad = quat_angle(dq_ref_45)
-        ref_vel_deg_per_sec = rad2deg(ref_angle_45_rad) / (1.0 / self.config.fps)
+        ref_vel_deg_per_sec = rad2deg(ref_angle_45_rad) / (1.0 / self.fps)
         
         # Original spike velocity should be very high (3.0 rad = ~172 deg in 1/30 sec = ~5157 deg/sec)
         # After fix, it should be much smaller (should be below max_ang_speed_deg=180.0 threshold)
@@ -250,8 +250,8 @@ class TestRefinementProfiles(unittest.TestCase):
             dq_ref = quat_mul(quat_inv(q_ref_prev), q_ref_curr)
             
             # Get angular velocity in degrees
-            orig_vel = rad2deg(quat_angle(dq_orig)) / (1.0 / self.config.fps)  # deg/sec
-            ref_vel = rad2deg(quat_angle(dq_ref)) / (1.0 / self.config.fps)  # deg/sec
+            orig_vel = rad2deg(quat_angle(dq_orig)) / (1.0 / self.fps)  # deg/sec
+            ref_vel = rad2deg(quat_angle(dq_ref)) / (1.0 / self.fps)  # deg/sec
             
             original_velocities.append(orig_vel)
             refined_velocities.append(ref_vel)

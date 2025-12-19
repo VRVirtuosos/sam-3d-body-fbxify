@@ -56,7 +56,8 @@
         "hands": "Mains",
         "fingers": "Doigts",
         "head": "Tête",
-        "legs": "Jambes"
+        "legs": "Jambes",
+        "default": "Par Défaut"
       },
       "max_pos_speed": "Vitesse Positionnelle Maximale",
       "max_pos_speed_info": "Vitesse positionnelle maximale (unités/sec) pour la détection de pics",
@@ -82,7 +83,9 @@
       "root_cutoff_xy_hz": "Coupure Racine XY (Hz)",
       "root_cutoff_xy_hz_info": "Fréquence de coupure pour le mouvement de racine horizontal (XY)",
       "root_cutoff_z_hz": "Coupure Racine Z (Hz)",
-      "root_cutoff_z_hz_info": "Fréquence de coupure pour le mouvement de racine vertical (Z)"
+      "root_cutoff_z_hz_info": "Fréquence de coupure pour le mouvement de racine vertical (Z)",
+      "interpolate_missing_keyframes": "Interpoler les images clés manquantes",
+      "interpolate_missing_keyframes_info": "Lorsqu'elle est activée, les images manquantes (où aucune personne n'a été détectée) seront interpolées en utilisant slerp pour les rotations et l'interpolation linéaire pour les vecteurs. Lorsqu'elle est désactivée, les images manquantes sont ignorées pendant le raffinement."
     }
   },
   "progress": {

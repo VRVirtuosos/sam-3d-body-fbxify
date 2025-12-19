@@ -28,6 +28,7 @@ class ProcessResult:
     visualization_data: Optional[List[Dict]]
     frame_paths: List[str]
     profile_name: str
+    fps: float
 
 
 @dataclass
@@ -38,6 +39,7 @@ class DebugData:
     visualization_data: Optional[List[Dict]]
     frame_paths: List[str]
     profile_name: str
+    fps: float
 
 
 class FbxifyManager:
@@ -57,7 +59,7 @@ class FbxifyManager:
         self.debug_results_dir = debug_results_dir
         os.makedirs(self.debug_results_dir, exist_ok=True)
     
-    def extract_frames_from_video(self, video_path: str, temp_dir: str) -> List[str]:
+    def extract_frames_from_video(self, video_path: str, temp_dir: str) -> Tuple[List[str], float]:
         """
         Extract all frames from video and save to temp directory.
         
@@ -66,11 +68,17 @@ class FbxifyManager:
             temp_dir: Temporary directory to save frames
             
         Returns:
-            List of frame file paths
+            Tuple of (frame_paths, fps) where fps is the video frame rate
         """
         cap = cv2.VideoCapture(video_path)
         frame_paths = []
         frame_count = 0
+        
+        # Get FPS from video
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0 or fps is None:
+            # Fallback to default if FPS cannot be determined
+            fps = 30.0
         
         while True:
             ret, frame = cap.read()
@@ -83,9 +91,9 @@ class FbxifyManager:
             frame_count += 1
         
         cap.release()
-        return frame_paths
+        return frame_paths, fps
     
-    def prepare_video(self, input_video_path: str) -> Tuple[List[str], str]:
+    def prepare_video(self, input_video_path: str) -> Tuple[List[str], str, float]:
         """
         Split video into frames.
         
@@ -93,15 +101,16 @@ class FbxifyManager:
             input_video_path: Path to input video file
             
         Returns:
-            Tuple of (frame_paths, temp_dir) where temp_dir should be cleaned up later
+            Tuple of (frame_paths, temp_dir, fps) where temp_dir should be cleaned up later
+            and fps is the video frame rate
         """
         if input_video_path is None:
-            return None, None
+            return None, None, 30.0
         
         # Create temp directory for frames
         temp_dir = tempfile.mkdtemp(prefix="sam3d_frames_")
-        frame_paths = self.extract_frames_from_video(input_video_path, temp_dir)
-        return frame_paths, temp_dir
+        frame_paths, fps = self.extract_frames_from_video(input_video_path, temp_dir)
+        return frame_paths, temp_dir, fps
     
     def prepare_bboxes(self, bbox_file_path: str) -> Dict[int, List[Tuple]]:
         """
@@ -154,7 +163,7 @@ class FbxifyManager:
     def process_frames(self, frame_paths: List[str], profile_name: str, num_people: int,
                       bbox_dict: Optional[Dict[int, List[Tuple]]] = None,
                       use_root_motion: bool = True, create_visualization: bool = False,
-                      progress_callback: Optional[callable] = None) -> ProcessResult:
+                      fps: float = 30.0, progress_callback: Optional[callable] = None) -> ProcessResult:
         """
         Process all frames and collect results.
         
@@ -165,6 +174,7 @@ class FbxifyManager:
             bbox_dict: Optional bounding box dictionary
             use_root_motion: Whether to track root motion
             create_visualization: Whether to create visualization data
+            fps: Frame rate of the animation (frames per second)
             progress_callback: Optional callback function(progress, description)
             
         Returns:
@@ -225,7 +235,8 @@ class FbxifyManager:
             root_motions=root_motions,
             visualization_data=visualization_data,
             frame_paths=frame_paths,
-            profile_name=profile_name
+            profile_name=profile_name,
+            fps=fps
         )
     
     def _convert_translation_to_list(self, trans_val) -> List[float]:
@@ -318,7 +329,7 @@ class FbxifyManager:
         if progress_callback:
             progress_callback(0.0, "Applying refinement...")
         
-        refinement_manager = RefinementManager(refinement_config)
+        refinement_manager = RefinementManager(refinement_config, process_result.fps)
         
         # Apply refinement to each person's joint_to_bone_mapping
         refined_mappings = {}
@@ -359,12 +370,13 @@ class FbxifyManager:
             root_motions=refined_root_motions,
             visualization_data=process_result.visualization_data,
             frame_paths=process_result.frame_paths,
-            profile_name=process_result.profile_name
+            profile_name=process_result.profile_name,
+            fps=process_result.fps
         )
     
     def export_fbx_files(self, profile_name: str, joint_to_bone_mappings: Dict[str, Any],
                          root_motions: Optional[Dict[str, List[Dict]]], frame_paths: List[str],
-                         progress_callback: Optional[callable] = None) -> List[str]:
+                         fps: float = 30.0, progress_callback: Optional[callable] = None) -> List[str]:
         """
         Export FBX files for each person.
         
@@ -373,6 +385,7 @@ class FbxifyManager:
             joint_to_bone_mappings: Dictionary mapping person ID to joint-to-bone mapping
             root_motions: Dictionary mapping person ID to root motion data
             frame_paths: List of frame paths (for metadata)
+            fps: Frame rate of the animation (frames per second)
             progress_callback: Optional callback function(progress, description)
             
         Returns:
@@ -385,7 +398,7 @@ class FbxifyManager:
             root_motion = root_motions[identifier] if root_motions else None
             
             fbx_path = export_to_fbx(
-                self.estimator.create_metadata(profile_name, identifier, num_keyframes=num_keyframes),
+                self.estimator.create_metadata(profile_name, identifier, num_keyframes=num_keyframes, fps=fps),
                 joint_to_bone_mappings[identifier],
                 root_motion,
                 self.estimator.get_armature_rest_pose(profile_name),
@@ -526,8 +539,13 @@ class FbxifyManager:
         with open(os.path.join(timestamp_dir, "frame_paths.json"), "w") as f:
             json.dump(process_result.frame_paths, f, indent=4)
         
-        with open(os.path.join(timestamp_dir, "profile_name.txt"), "w") as f:
-            f.write(process_result.profile_name)
+        # Save metadata.json with profile_name and fps
+        metadata = {
+            "profile_name": process_result.profile_name,
+            "fps": process_result.fps
+        }
+        with open(os.path.join(timestamp_dir, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=4)
         
         # Update the index file
         index_path = os.path.join(self.debug_results_dir, "sam3d_saved_results.json")
@@ -630,15 +648,33 @@ class FbxifyManager:
         with open(os.path.join(timestamp_dir, "frame_paths.json"), "r") as f:
             frame_paths = json.load(f)
         
-        with open(os.path.join(timestamp_dir, "profile_name.txt"), "r") as f:
-            profile_name = f.read().strip()
+        # Load metadata.json (new format) or fall back to profile_name.txt (old format)
+        metadata_path = os.path.join(timestamp_dir, "metadata.json")
+        profile_name_txt_path = os.path.join(timestamp_dir, "profile_name.txt")
+        
+        if os.path.exists(metadata_path):
+            # New format: load from metadata.json
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+            profile_name = metadata.get("profile_name", "unknown")
+            fps = metadata.get("fps", 30.0)
+        elif os.path.exists(profile_name_txt_path):
+            # Old format: load from profile_name.txt, use default FPS
+            with open(profile_name_txt_path, "r") as f:
+                profile_name = f.read().strip()
+            fps = 30.0  # Default for old format
+        else:
+            # Fallback if neither exists
+            profile_name = "unknown"
+            fps = 30.0
         
         return DebugData(
             joint_to_bone_mappings=joint_to_bone_mappings,
             root_motions=root_motions,
             visualization_data=visualization_data,
             frame_paths=frame_paths,
-            profile_name=profile_name
+            profile_name=profile_name,
+            fps=fps
         )
     
     def reexport_debug_results(self, timestamp: int, use_root_motion: bool = True,
@@ -669,7 +705,8 @@ class FbxifyManager:
             root_motions=debug_data.root_motions if use_root_motion else None,
             visualization_data=debug_data.visualization_data,
             frame_paths=debug_data.frame_paths,
-            profile_name=debug_data.profile_name
+            profile_name=debug_data.profile_name,
+            fps=debug_data.fps
         )
         
         # Apply refinement if enabled
@@ -678,6 +715,7 @@ class FbxifyManager:
                 if progress_callback:
                     progress_callback(0.1 + progress_value * 0.2, description)
             
+            # Apply refinement (FPS is already in process_result)
             process_result = self.apply_refinement(
                 process_result,
                 refinement_config,
@@ -692,11 +730,13 @@ class FbxifyManager:
                 base_progress = 0.3 if refinement_config is not None else 0.1
                 progress_callback(base_progress + progress_value * 0.6, description)
         
+        # Use FPS from process_result
         fbx_paths = self.export_fbx_files(
             process_result.profile_name,
             process_result.joint_to_bone_mappings,
             process_result.root_motions,
             process_result.frame_paths,
+            process_result.fps,
             export_progress
         )
         output_files.extend(fbx_paths)

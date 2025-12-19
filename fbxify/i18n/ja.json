@@ -56,7 +56,8 @@
         "hands": "手",
         "fingers": "指",
         "head": "頭",
-        "legs": "脚"
+        "legs": "脚",
+        "default": "デフォルト"
       },
       "max_pos_speed": "最大位置速度",
       "max_pos_speed_info": "スパイク検出のための最大位置速度（単位/秒）",
@@ -82,7 +83,9 @@
       "root_cutoff_xy_hz": "ルートカットオフXY（Hz）",
       "root_cutoff_xy_hz_info": "水平（XY）ルートモーションのカットオフ周波数",
       "root_cutoff_z_hz": "ルートカットオフZ（Hz）",
-      "root_cutoff_z_hz_info": "垂直（Z）ルートモーションのカットオフ周波数"
+      "root_cutoff_z_hz_info": "垂直（Z）ルートモーションのカットオフ周波数",
+      "interpolate_missing_keyframes": "欠落キーフレームの補間",
+      "interpolate_missing_keyframes_info": "有効にすると、欠落フレーム（人物が検出されなかったフレーム）は、回転にはslerp、ベクトルには線形補間を使用して補間されます。無効にすると、欠落フレームはリファインメント中にスキップされます。"
     }
   },
   "progress": {

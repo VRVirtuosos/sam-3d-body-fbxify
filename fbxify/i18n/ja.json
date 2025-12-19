@@ -12,7 +12,12 @@
     "usage": [
       "画像またはMP4動画をアップロード",
       "「FBXを生成」ボタンをクリック",
-      "生成されたFBXをダウンロード → Unityにインポート"
+      "生成されたFBXをダウンロード → Unityにインポート",
+      "以下はオプション機能です：",
+      "gta-link、boxmot、colmapから独自のbboxesとカメラ内部パラメータファイルをアップロード",
+      "動画の場合、アーマチュアにルートモーションが必要な場合と不要な場合があります - 必要な場合はチェックボックスをオンにしてください",
+      "リファインメントを通じてアニメーションに標準的なモーキャップスタイルのスムージングを適用します。デフォルトで有効で、カスタマイズ可能な設定があります。",
+      "デバッグ目的でアニメーションの視覚化動画を作成することもできます。"
     ]
   },
   "ui": {
@@ -35,7 +40,50 @@
     "debug_saved_timestamps": "📁 保存されたタイムスタンプ",
     "debug_reexport_btn": "🔄 保存から再エクスポート",
     "debug_clear_btn": "🗑️ すべての保存結果をクリア",
-    "debug_no_saved_results": "保存された結果はありません"
+    "debug_no_saved_results": "保存された結果はありません",
+    "refinement": {
+      "title": "リファインメント",
+      "enabled": "有効",
+      "enabled_info": "生成後に実行されるリファインメント処理を有効にする",
+      "load_config": "設定を読み込む",
+      "load_config_info": "JSON設定ファイルをアップロード",
+      "save_config": "設定を保存",
+      "save_config_info": "現在の設定をJSONとしてダウンロード",
+      "save_config_btn": "設定を保存",
+      "global_settings": "リファインメントグローバル設定",
+      "sections": {
+        "root": "ルート",
+        "hands": "手",
+        "fingers": "指",
+        "head": "頭",
+        "legs": "脚"
+      },
+      "max_pos_speed": "最大位置速度",
+      "max_pos_speed_info": "スパイク検出のための最大位置速度（単位/秒）",
+      "max_pos_accel": "最大位置加速度",
+      "max_pos_accel_info": "スパイク検出のための最大位置加速度（単位/秒²）",
+      "max_ang_speed_deg": "最大角速度（度）",
+      "max_ang_speed_deg_info": "スパイク検出のための最大角速度（度/秒）",
+      "max_ang_accel_deg": "最大角加速度（度）",
+      "max_ang_accel_deg_info": "スパイク検出のための最大角加速度（度/秒²）",
+      "method": "方法",
+      "method_info": "スムージングフィルター方法",
+      "method_one_euro": "One Euro",
+      "method_ema": "EMA",
+      "method_butterworth": "Butterworth",
+      "cutoff_hz": "カットオフ周波数（Hz）",
+      "cutoff_hz_info": "EMA/Butterworthフィルターのカットオフ周波数",
+      "one_euro_min_cutoff": "One Euro最小カットオフ（Hz）",
+      "one_euro_min_cutoff_info": "One Euroフィルターの最小カットオフ周波数",
+      "one_euro_beta": "One Euro Beta",
+      "one_euro_beta_info": "One Euroフィルターの速度係数",
+      "one_euro_d_cutoff": "One Euro微分カットオフ（Hz）",
+      "one_euro_d_cutoff_info": "One Euroフィルターの微分カットオフ周波数",
+      "root_cutoff_xy_hz": "ルートカットオフXY（Hz）",
+      "root_cutoff_xy_hz_info": "水平（XY）ルートモーションのカットオフ周波数",
+      "root_cutoff_z_hz": "ルートカットオフZ（Hz）",
+      "root_cutoff_z_hz_info": "垂直（Z）ルートモーションのカットオフ周波数"
+    }
   },
   "progress": {
     "processing_keyframes": "📦 キーフレームを処理中...",

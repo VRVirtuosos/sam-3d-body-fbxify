@@ -12,7 +12,12 @@
     "usage": [
       "Upload an image or MP4 video",
       "Click the \"Generate FBX\" button",
-      "Download the generated FBX → Import to Unity"
+      "Download the generated FBX → Import to Unity",
+      "The following are optional features:",
+      "Upload your own bboxes and camera intrinsics file from gta-link, boxmot, colmap",
+      "For video, you may or may not want root motion for your armature - check the box if you do",
+      "Apply standard mocap-style smoothing to the animation via Refinement. Enabled by defaultwith some customizable settings.",
+      "You may also create a visualization video of the animation for debugging purposes."
     ]
   },
   "ui": {
@@ -35,7 +40,50 @@
     "debug_saved_timestamps": "📁 Saved Timestamps",
     "debug_reexport_btn": "🔄 Re-export from Saved",
     "debug_clear_btn": "🗑️ Clear All Saved Results",
-    "debug_no_saved_results": "No saved results"
+    "debug_no_saved_results": "No saved results",
+    "refinement": {
+      "title": "Refinement",
+      "enabled": "Enabled",
+      "enabled_info": "Enable refinement processing (occurs after generation)",
+      "load_config": "Load Config",
+      "load_config_info": "Upload a JSON configuration file",
+      "save_config": "Save Config",
+      "save_config_info": "Download current configuration as JSON",
+      "save_config_btn": "Save Configuration",
+      "global_settings": "Refinement Global Settings",
+      "sections": {
+        "root": "Root",
+        "hands": "Hands",
+        "fingers": "Fingers",
+        "head": "Head",
+        "legs": "Legs"
+      },
+      "max_pos_speed": "Max Positional Speed",
+      "max_pos_speed_info": "Maximum positional speed (units/sec) for spike detection",
+      "max_pos_accel": "Max Positional Acceleration",
+      "max_pos_accel_info": "Maximum positional acceleration (units/sec²) for spike detection",
+      "max_ang_speed_deg": "Max Angular Speed (Degrees)",
+      "max_ang_speed_deg_info": "Maximum angular speed (deg/sec) for spike detection",
+      "max_ang_accel_deg": "Max Angular Acceleration (Degrees)",
+      "max_ang_accel_deg_info": "Maximum angular acceleration (deg/sec²) for spike detection",
+      "method": "Method",
+      "method_info": "Smoothing filter method",
+      "method_one_euro": "One Euro",
+      "method_ema": "EMA",
+      "method_butterworth": "Butterworth",
+      "cutoff_hz": "Cutoff Frequency (Hz)",
+      "cutoff_hz_info": "Cutoff frequency for EMA/Butterworth filters",
+      "one_euro_min_cutoff": "One Euro Min Cutoff (Hz)",
+      "one_euro_min_cutoff_info": "Minimum cutoff frequency for One Euro filter",
+      "one_euro_beta": "One Euro Beta",
+      "one_euro_beta_info": "Speed coefficient for One Euro filter",
+      "one_euro_d_cutoff": "One Euro Derivative Cutoff (Hz)",
+      "one_euro_d_cutoff_info": "Derivative cutoff frequency for One Euro filter",
+      "root_cutoff_xy_hz": "Root Cutoff XY (Hz)",
+      "root_cutoff_xy_hz_info": "Cutoff frequency for horizontal (XY) root motion",
+      "root_cutoff_z_hz": "Root Cutoff Z (Hz)",
+      "root_cutoff_z_hz_info": "Cutoff frequency for vertical (Z) root motion"
+    }
   },
   "progress": {
     "processing_keyframes": "📦 Processing keyframes...",

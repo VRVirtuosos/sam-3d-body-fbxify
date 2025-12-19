@@ -444,9 +444,6 @@ class PoseEstimator:
                 "pred_cam_t": outputs["pred_cam_t"], # colmap can and should be used to reverse this, assuming both camera and person are moving. But we assume static camera as far as outputs are concerned
             })
 
-            print(f"pred_cam_t: {outputs['pred_cam_t']}")
-            print(f"global_rot: {outputs['global_rot']}")
-
             # vertices = np.array([convert_to_blender_coords(v) for v in vertices]) # TODO: Not sure what to do with this for now - we're armature only
         
             all_results[id] = {

@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional
 DEFAULT_LANGUAGE = "en"
 
 # Supported languages
-SUPPORTED_LANGUAGES = ["en", "ja"]
+SUPPORTED_LANGUAGES = ["en", "ja", "es", "fr"]
 
 # Translation cache
 _translations: Dict[str, Dict[str, Any]] = {}

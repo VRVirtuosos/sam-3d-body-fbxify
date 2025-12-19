@@ -2,16 +2,16 @@ from sam_3d_body.metadata.mhr70 import pose_info
 
 PROFILES = {
     "mhr": {
-        "joint_mapping_path": "mhr/mhr_armature_joints_mapping.json",
-        "armature_rest_pose_path": "mhr/mhr_armature_skeleton_rest_pose.json",
+        "joint_mapping_path": "mapping/mhr/mhr_armature_joints_mapping.json",
+        "armature_rest_pose_path": "mapping/mhr/mhr_armature_skeleton_rest_pose.json",
     },
     "mixamo": {
-        "joint_mapping_path": "mixamo/mixamo_armature_joints_mapping.json",
-        "armature_rest_pose_path": "mixamo/mixamo_armature_skeleton_rest_pose.json",
+        "joint_mapping_path": "mapping/mixamo/mixamo_armature_joints_mapping.json",
+        "armature_rest_pose_path": "mapping/mixamo/mixamo_armature_skeleton_rest_pose.json",
     },
     "unity": {
-        "joint_mapping_path": "unity/unity_armature_joints_mapping.json",
-        "armature_rest_pose_path": "unity/unity_armature_skeleton_rest_pose.json",
+        "joint_mapping_path": "mapping/unity/unity_armature_joints_mapping.json",
+        "armature_rest_pose_path": "mapping/unity/unity_armature_skeleton_rest_pose.json",
     },
 }
 

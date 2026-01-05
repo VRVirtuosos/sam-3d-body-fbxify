@@ -20,8 +20,7 @@
       "Las siguientes son características opcionales:",
       "Sube tus propios archivos de bboxes e intrínsecos de cámara desde gta-link, boxmot, colmap",
       "Para video, puedes querer o no querer movimiento de raíz para tu armadura - marca la casilla si lo deseas",
-      "Aplica suavizado estilo mocap estándar a la animación mediante Refinement. Habilitado por defecto con algunas configuraciones personalizables.",
-      "También puedes crear un video de visualización de la animación con fines de depuración."
+      "Aplica suavizado estilo mocap estándar a la animación mediante Refinement. Habilitado por defecto con algunas configuraciones personalizables."
     ]
   },
   "ui": {
@@ -52,7 +51,6 @@
     "pose_json_file_info": "Sube un archivo JSON de estimación de pose, o se completará automáticamente después de la estimación",
     "output_files": "📦 Archivos Generados",
     "developer_options": "Opciones de Desarrollador",
-    "create_visualization": "Crear Visualización",
     "debug_save_results": "💾 Guardar Resultados para Re-exportar",
     "debug_saved_timestamps": "📁 Marcas de Tiempo Guardadas",
     "debug_reexport_btn": "🔄 Re-exportar desde Guardado",
@@ -74,6 +72,7 @@
         "fingers": "Dedos",
         "head": "Cabeza",
         "legs": "Piernas",
+        "arms": "Brazos",
         "default": "Por Defecto"
       },
       "max_pos_speed": "Velocidad Posicional Máxima",
@@ -102,13 +101,29 @@
       "root_cutoff_z_hz": "Corte Raíz Z (Hz)",
       "root_cutoff_z_hz_info": "Frecuencia de corte para movimiento de raíz vertical (Z)",
       "interpolate_missing_keyframes": "Interpolar fotogramas clave faltantes",
-      "interpolate_missing_keyframes_info": "Cuando está habilitado, los fotogramas faltantes (donde no se detectaron personas) se interpolarán usando slerp para rotaciones e interpolación lineal para vectores. Cuando está deshabilitado, los fotogramas faltantes se omiten durante el refinamiento."
+      "interpolate_missing_keyframes_info": "Cuando está habilitado, los fotogramas faltantes (donde no se detectaron personas) se interpolarán usando slerp para rotaciones e interpolación lineal para vectores. Cuando está deshabilitado, los fotogramas faltantes se omiten durante el refinamiento.",
+      "use_foot_planting": "Usar Plantado de Pie",
+      "use_foot_planting_info": "Habilitar el plantado de pie para ajustar el movimiento de raíz basado en el contacto del pie, reduciendo el temblor y creando un movimiento de caminar/correr más natural",
+      "foot_planting": {
+        "title": "Plantado de Pie",
+        "foot_contact_velocity_threshold": "Umbral de Velocidad de Contacto del Pie (m/s)",
+        "foot_contact_velocity_threshold_info": "El pie se considera 'plantado' si su velocidad está por debajo de este umbral",
+        "foot_contact_min_height": "Altura Mínima de Contacto del Pie (m)",
+        "foot_contact_min_height_info": "El pie debe estar por debajo de esta altura (coordenada Y) para ser considerado en contacto",
+        "contact_smoothing_window": "Ventana de Suavizado de Contacto",
+        "contact_smoothing_window_info": "Número de fotogramas a usar para suavizar la detección de contacto (reduce el parpadeo)",
+        "blend_factor": "Factor de Mezcla",
+        "blend_factor_info": "Cuánto mezclar el ajuste de raíz basado en el pie con el movimiento de raíz original (0-1, mayor = más ajuste)",
+        "root_smoothing_window": "Ventana de Suavizado de Raíz",
+        "root_smoothing_window_info": "Número de fotogramas a usar para suavizar el movimiento de raíz ajustado",
+        "use_mid_foot": "Usar Medio del Pie",
+        "use_mid_foot_info": "Usar el medio del pie (promedio de talón/dedos) en lugar del tobillo para la posición del pie"
+      }
     }
   },
   "progress": {
     "processing_keyframes": "📦 Procesando fotogramas clave...",
     "processing_person": "📦 Procesando persona...",
-    "creating_visualization": "🎨 Creando visualización...",
     "reexporting": "🔄 Re-exportando desde resultados guardados..."
   },
   "errors": {

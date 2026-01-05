@@ -20,8 +20,7 @@
       "以下はオプション機能です：",
       "gta-link、boxmot、colmapから独自のbboxesとカメラ内部パラメータファイルをアップロード",
       "動画の場合、アーマチュアにルートモーションが必要な場合と不要な場合があります - 必要な場合はチェックボックスをオンにしてください",
-      "リファインメントを通じてアニメーションに標準的なモーキャップスタイルのスムージングを適用します。デフォルトで有効で、カスタマイズ可能な設定があります。",
-      "デバッグ目的でアニメーションの視覚化動画を作成することもできます。"
+      "リファインメントを通じてアニメーションに標準的なモーキャップスタイルのスムージングを適用します。デフォルトで有効で、カスタマイズ可能な設定があります。"
     ]
   },
   "ui": {
@@ -52,7 +51,6 @@
     "pose_json_file_info": "ポーズ推定JSONファイルをアップロードするか、推定後に自動入力されます",
     "output_files": "📦 生成されたファイル",
     "developer_options": "開発者オプション",
-    "create_visualization": "視覚化を作成",
     "debug_save_results": "💾 再エクスポート用に保存",
     "debug_saved_timestamps": "📁 保存されたタイムスタンプ",
     "debug_reexport_btn": "🔄 保存から再エクスポート",
@@ -74,6 +72,7 @@
         "fingers": "指",
         "head": "頭",
         "legs": "脚",
+        "arms": "腕",
         "default": "デフォルト"
       },
       "max_pos_speed": "最大位置速度",
@@ -102,13 +101,29 @@
       "root_cutoff_z_hz": "ルートカットオフZ（Hz）",
       "root_cutoff_z_hz_info": "垂直（Z）ルートモーションのカットオフ周波数",
       "interpolate_missing_keyframes": "欠落キーフレームの補間",
-      "interpolate_missing_keyframes_info": "有効にすると、欠落フレーム（人物が検出されなかったフレーム）は、回転にはslerp、ベクトルには線形補間を使用して補間されます。無効にすると、欠落フレームはリファインメント中にスキップされます。"
+      "interpolate_missing_keyframes_info": "有効にすると、欠落フレーム（人物が検出されなかったフレーム）は、回転にはslerp、ベクトルには線形補間を使用して補間されます。無効にすると、欠落フレームはリファインメント中にスキップされます。",
+      "use_foot_planting": "フットプランティングを使用",
+      "use_foot_planting_info": "フットプランティングを有効にして、足の接触に基づいてルートモーションを調整し、ジッターを減らし、より自然な歩行/走行モーションを作成",
+      "foot_planting": {
+        "title": "フットプランティング",
+        "foot_contact_velocity_threshold": "足接触速度しきい値（m/s）",
+        "foot_contact_velocity_threshold_info": "足の速度がこのしきい値を下回る場合、足は「接地」していると見なされます",
+        "foot_contact_min_height": "足接触最小高さ（m）",
+        "foot_contact_min_height_info": "足が接触していると見なされるには、この高さ（Y座標）以下である必要があります",
+        "contact_smoothing_window": "接触平滑化ウィンドウ",
+        "contact_smoothing_window_info": "接触検出の平滑化に使用するフレーム数（ちらつきを減らす）",
+        "blend_factor": "ブレンド係数",
+        "blend_factor_info": "足ベースのルート調整を元のルートモーションとどれだけブレンドするか（0-1、高いほど調整が多い）",
+        "root_smoothing_window": "ルート平滑化ウィンドウ",
+        "root_smoothing_window_info": "調整されたルートモーションの平滑化に使用するフレーム数",
+        "use_mid_foot": "ミッドフットを使用",
+        "use_mid_foot_info": "足の位置に足首の代わりにミッドフット（かかと/つま先の平均）を使用"
+      }
     }
   },
   "progress": {
     "processing_keyframes": "📦 キーフレームを処理中...",
     "processing_person": "📦 人物を処理中...",
-    "creating_visualization": "🎨 視覚化を作成中...",
     "reexporting": "🔄 保存された結果から再エクスポート中..."
   },
   "errors": {

@@ -15,6 +15,7 @@ from fbxify.refinement.profiles.hands_profile import HANDS_PROFILE
 from fbxify.refinement.profiles.fingers_profile import FINGERS_PROFILE
 from fbxify.refinement.profiles.head_profile import HEAD_PROFILE
 from fbxify.refinement.profiles.legs_profile import LEGS_PROFILE
+from fbxify.refinement.profiles.arms_profile import ARMS_PROFILE
 from fbxify.refinement.profiles.default_profile import DEFAULT_PROFILE
 from fbxify.refinement.refinement_config import RefinementConfig
 from fbxify.i18n import Translator
@@ -177,6 +178,9 @@ def build_refinement_config_from_gui(
     # Legs profile values
     legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
     legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+    # Arms profile values
+    arms_max_pos_speed, arms_max_pos_accel, arms_max_ang_speed_deg, arms_max_ang_accel_deg,
+    arms_method, arms_cutoff_hz, arms_one_euro_min_cutoff, arms_one_euro_beta, arms_one_euro_d_cutoff,
     # Default profile values
     default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
     default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
@@ -184,14 +188,16 @@ def build_refinement_config_from_gui(
     foot_planting_velocity_threshold=None, foot_planting_min_height=None,
     foot_planting_contact_window=None, foot_planting_blend_factor=None,
     foot_planting_root_window=None, foot_planting_use_mid_foot=None,
-    foot_planting_apply_before=None,
 ) -> Optional[RefinementConfig]:
     """
     Build a RefinementConfig from GUI values.
     Returns None if refinement is disabled.
     """
+    print(f"build_refinement_config_from_gui(): enabled={enabled}")
     if not enabled:
+        print("build_refinement_config_from_gui(): enabled is False, returning None")
         return None
+    print("build_refinement_config_from_gui(): enabled is True, building config...")
     
     def translate_method_to_internal(method_str):
         """Convert translated method name to internal value."""
@@ -269,6 +275,14 @@ def build_refinement_config_from_gui(
         'one_euro_d_cutoff': legs_one_euro_d_cutoff,
     }
     
+    arms_values = {
+        'max_pos_speed': arms_max_pos_speed, 'max_pos_accel': arms_max_pos_accel,
+        'max_ang_speed_deg': arms_max_ang_speed_deg, 'max_ang_accel_deg': arms_max_ang_accel_deg,
+        'method': arms_method, 'cutoff_hz': arms_cutoff_hz,
+        'one_euro_min_cutoff': arms_one_euro_min_cutoff, 'one_euro_beta': arms_one_euro_beta,
+        'one_euro_d_cutoff': arms_one_euro_d_cutoff,
+    }
+    
     default_values = {
         'max_pos_speed': default_max_pos_speed, 'max_pos_accel': default_max_pos_accel,
         'max_ang_speed_deg': default_max_ang_speed_deg, 'max_ang_accel_deg': default_max_ang_accel_deg,
@@ -284,6 +298,9 @@ def build_refinement_config_from_gui(
         "*finger*": create_profile(fingers_values, is_root=False),
         "*head*": create_profile(head_values, is_root=False),
         "*leg*": create_profile(legs_values, is_root=False),
+        "*arm*": create_profile(arms_values, is_root=False),
+        "*wrist*": create_profile(arms_values, is_root=False),
+        "*clavicle*": create_profile(arms_values, is_root=False),
         "*": create_profile(default_values, is_root=False),   # default
     }
     config.do_spike_fix = True
@@ -297,13 +314,12 @@ def build_refinement_config_from_gui(
     if use_foot_planting:
         from fbxify.refinement.foot_planting_config import FootPlantingConfig
         config.foot_planting_config = FootPlantingConfig(
-            foot_contact_velocity_threshold=foot_planting_velocity_threshold if foot_planting_velocity_threshold is not None else 0.05,
-            foot_contact_min_height=foot_planting_min_height if foot_planting_min_height is not None else 0.02,
+            foot_contact_velocity_threshold=foot_planting_velocity_threshold if foot_planting_velocity_threshold is not None else 0.15,
+            foot_contact_min_height=foot_planting_min_height if foot_planting_min_height is not None else 0.10,
             contact_smoothing_window=int(foot_planting_contact_window) if foot_planting_contact_window is not None else 3,
             blend_factor=foot_planting_blend_factor if foot_planting_blend_factor is not None else 0.3,
             root_smoothing_window=int(foot_planting_root_window) if foot_planting_root_window is not None else 5,
             use_mid_foot=foot_planting_use_mid_foot if foot_planting_use_mid_foot is not None else True,
-            apply_before_root_smoothing=foot_planting_apply_before if foot_planting_apply_before is not None else False,
         )
     
     return config
@@ -379,7 +395,7 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
                 
                 use_foot_planting = gr.Checkbox(
                     label=translator.t("ui.refinement.use_foot_planting"),
-                    value=False,
+                    value=True,
                     info=translator.t("ui.refinement.use_foot_planting_info")
                 )
             
@@ -401,7 +417,7 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
     from fbxify.refinement.foot_planting_config import FootPlantingConfig
     default_foot_planting_config = FootPlantingConfig()
     
-    with gr.Group(visible=False) as foot_planting_group:
+    with gr.Group(visible=True) as foot_planting_group:
         gr.Markdown(f"### {translator.t('ui.refinement.foot_planting.title')}", elem_classes=["refinement-profile-header"])
         
         foot_planting_velocity_threshold = gr.Number(
@@ -451,12 +467,6 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
             label=translator.t("ui.refinement.foot_planting.use_mid_foot"),
             value=default_foot_planting_config.use_mid_foot,
             info=translator.t("ui.refinement.foot_planting.use_mid_foot_info")
-        )
-        
-        foot_planting_apply_before = gr.Checkbox(
-            label=translator.t("ui.refinement.foot_planting.apply_before_root_smoothing"),
-            value=default_foot_planting_config.apply_before_root_smoothing,
-            info=translator.t("ui.refinement.foot_planting.apply_before_root_smoothing_info")
         )
     
     # Show/hide foot planting section based on checkbox
@@ -517,6 +527,15 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
     )
     profile_components["legs"] = legs_components
     
+    # Arms profile
+    arms_components = create_filter_profile_ui(
+        ARMS_PROFILE, 
+        translator.t("ui.refinement.sections.arms"), 
+        translator,
+        is_root=False
+    )
+    profile_components["arms"] = arms_components
+    
     # Default profile
     default_components = create_filter_profile_ui(
         DEFAULT_PROFILE, 
@@ -546,6 +565,69 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
                     outputs=[cutoff_hz, one_euro_min_cutoff, one_euro_beta, one_euro_d_cutoff]
                 )
     
+    # Function to enable/disable all refinement inputs based on checkbox
+    def toggle_refinement_inputs(enabled_value):
+        """Enable or disable all refinement inputs based on the enabled checkbox."""
+        # Collect all outputs that need to be updated
+        outputs_list = []
+        
+        # Add global checkboxes
+        outputs_list.append(gr.update(interactive=enabled_value))  # interpolate_missing_keyframes
+        outputs_list.append(gr.update(interactive=enabled_value))  # use_foot_planting
+        
+        # Add foot planting inputs
+        outputs_list.append(gr.update(interactive=enabled_value))  # foot_planting_velocity_threshold
+        outputs_list.append(gr.update(interactive=enabled_value))  # foot_planting_min_height
+        outputs_list.append(gr.update(interactive=enabled_value))  # foot_planting_contact_window
+        outputs_list.append(gr.update(interactive=enabled_value))  # foot_planting_blend_factor
+        outputs_list.append(gr.update(interactive=enabled_value))  # foot_planting_root_window
+        outputs_list.append(gr.update(interactive=enabled_value))  # foot_planting_use_mid_foot
+        
+        # Add all profile components
+        for profile_name, components in profile_components.items():
+            for key in ['max_pos_speed', 'max_pos_accel', 'max_ang_speed_deg', 'max_ang_accel_deg',
+                        'method', 'cutoff_hz', 'one_euro_min_cutoff', 'one_euro_beta', 'one_euro_d_cutoff']:
+                if key in components:
+                    outputs_list.append(gr.update(interactive=enabled_value))
+            # Add root-specific fields if this is the root profile
+            if profile_name == "root":
+                for key in ['root_cutoff_xy_hz', 'root_cutoff_z_hz']:
+                    if key in components:
+                        outputs_list.append(gr.update(interactive=enabled_value))
+        
+        return outputs_list
+    
+    # Collect all outputs for the toggle function
+    toggle_outputs = [
+        interpolate_missing_keyframes,
+        use_foot_planting,
+        foot_planting_velocity_threshold,
+        foot_planting_min_height,
+        foot_planting_contact_window,
+        foot_planting_blend_factor,
+        foot_planting_root_window,
+        foot_planting_use_mid_foot,
+    ]
+    
+    # Add all profile components to outputs
+    for profile_name, components in profile_components.items():
+        for key in ['max_pos_speed', 'max_pos_accel', 'max_ang_speed_deg', 'max_ang_accel_deg',
+                    'method', 'cutoff_hz', 'one_euro_min_cutoff', 'one_euro_beta', 'one_euro_d_cutoff']:
+            if key in components:
+                toggle_outputs.append(components[key])
+        # Add root-specific fields if this is the root profile
+        if profile_name == "root":
+            for key in ['root_cutoff_xy_hz', 'root_cutoff_z_hz']:
+                if key in components:
+                    toggle_outputs.append(components[key])
+    
+    # Wire up the refinement_enabled checkbox to toggle all inputs
+    refinement_enabled.change(
+        fn=toggle_refinement_inputs,
+        inputs=[refinement_enabled],
+        outputs=toggle_outputs
+    )
+    
     # Save configuration function
     def save_configuration(
         enabled: bool,
@@ -567,6 +649,9 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         # Legs profile values
         legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
         legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+        # Arms profile values
+        arms_max_pos_speed, arms_max_pos_accel, arms_max_ang_speed_deg, arms_max_ang_accel_deg,
+        arms_method, arms_cutoff_hz, arms_one_euro_min_cutoff, arms_one_euro_beta, arms_one_euro_d_cutoff,
         # Default profile values
         default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
         default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
@@ -574,7 +659,6 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         foot_planting_velocity_threshold=None, foot_planting_min_height=None,
         foot_planting_contact_window=None, foot_planting_blend_factor=None,
         foot_planting_root_window=None, foot_planting_use_mid_foot=None,
-        foot_planting_apply_before=None,
     ) -> str:
         """Save current configuration to JSON."""
         def translate_method_to_internal(method_str):
@@ -653,6 +737,14 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
             'one_euro_d_cutoff': legs_one_euro_d_cutoff,
         }
         
+        arms_values = {
+            'max_pos_speed': arms_max_pos_speed, 'max_pos_accel': arms_max_pos_accel,
+            'max_ang_speed_deg': arms_max_ang_speed_deg, 'max_ang_accel_deg': arms_max_ang_accel_deg,
+            'method': arms_method, 'cutoff_hz': arms_cutoff_hz,
+            'one_euro_min_cutoff': arms_one_euro_min_cutoff, 'one_euro_beta': arms_one_euro_beta,
+            'one_euro_d_cutoff': arms_one_euro_d_cutoff,
+        }
+        
         default_values = {
             'max_pos_speed': default_max_pos_speed, 'max_pos_accel': default_max_pos_accel,
             'max_ang_speed_deg': default_max_ang_speed_deg, 'max_ang_accel_deg': default_max_ang_accel_deg,
@@ -669,6 +761,9 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
                 "*finger*": create_profile_dict(fingers_values, is_root=False),
                 "*head*": create_profile_dict(head_values, is_root=False),
                 "*leg*": create_profile_dict(legs_values, is_root=False),
+                "*arm*": create_profile_dict(arms_values, is_root=False),
+                "*wrist*": create_profile_dict(arms_values, is_root=False),
+                "*clavicle*": create_profile_dict(arms_values, is_root=False),
                 "*": create_profile_dict(default_values, is_root=False),
             },
             "do_spike_fix": True,
@@ -689,7 +784,6 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
                 blend_factor=foot_planting_blend_factor if foot_planting_blend_factor is not None else 0.3,
                 root_smoothing_window=int(foot_planting_root_window) if foot_planting_root_window is not None else 5,
                 use_mid_foot=foot_planting_use_mid_foot if foot_planting_use_mid_foot is not None else True,
-                apply_before_root_smoothing=foot_planting_apply_before if foot_planting_apply_before is not None else False,
             )
             config["foot_planting_config"] = foot_planting_config.to_dict()
         
@@ -748,6 +842,15 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         legs_components['one_euro_d_cutoff'],
     ])
     
+    # Add arms profile inputs
+    save_inputs.extend([
+        arms_components['max_pos_speed'], arms_components['max_pos_accel'],
+        arms_components['max_ang_speed_deg'], arms_components['max_ang_accel_deg'],
+        arms_components['method'], arms_components['cutoff_hz'],
+        arms_components['one_euro_min_cutoff'], arms_components['one_euro_beta'],
+        arms_components['one_euro_d_cutoff'],
+    ])
+    
     # Add default profile inputs
     save_inputs.extend([
         default_components['max_pos_speed'], default_components['max_pos_accel'],
@@ -765,7 +868,6 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         foot_planting_blend_factor,
         foot_planting_root_window,
         foot_planting_use_mid_foot,
-        foot_planting_apply_before,
     ])
     
     # Wire up save button - show config file download when clicked
@@ -862,6 +964,11 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
                     'method', 'cutoff_hz', 'one_euro_min_cutoff', 'one_euro_beta', 'one_euro_d_cutoff']
         updates.extend(get_profile_updates("*leg*", legs_keys, is_root=False))
         
+        # Arms profile
+        arms_keys = ['max_pos_speed', 'max_pos_accel', 'max_ang_speed_deg', 'max_ang_accel_deg',
+                    'method', 'cutoff_hz', 'one_euro_min_cutoff', 'one_euro_beta', 'one_euro_d_cutoff']
+        updates.extend(get_profile_updates("*arm*", arms_keys, is_root=False))
+        
         # Default profile
         default_keys = ['max_pos_speed', 'max_pos_accel', 'max_ang_speed_deg', 'max_ang_accel_deg',
                        'method', 'cutoff_hz', 'one_euro_min_cutoff', 'one_euro_beta', 'one_euro_d_cutoff']
@@ -869,13 +976,12 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         
         # Foot planting parameters
         foot_planting_config = config.get("foot_planting_config", {})
-        updates.append(gr.update(value=foot_planting_config.get("foot_contact_velocity_threshold", 0.05)))
-        updates.append(gr.update(value=foot_planting_config.get("foot_contact_min_height", 0.02)))
+        updates.append(gr.update(value=foot_planting_config.get("foot_contact_velocity_threshold", 0.15)))
+        updates.append(gr.update(value=foot_planting_config.get("foot_contact_min_height", 0.10)))
         updates.append(gr.update(value=foot_planting_config.get("contact_smoothing_window", 3)))
         updates.append(gr.update(value=foot_planting_config.get("blend_factor", 0.3)))
         updates.append(gr.update(value=foot_planting_config.get("root_smoothing_window", 5)))
         updates.append(gr.update(value=foot_planting_config.get("use_mid_foot", True)))
-        updates.append(gr.update(value=foot_planting_config.get("apply_before_root_smoothing", False)))
         
         return updates
     
@@ -907,12 +1013,13 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
          head_method, head_cutoff_hz, head_one_euro_min_cutoff, head_one_euro_beta, head_one_euro_d_cutoff,
          legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
          legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+         arms_max_pos_speed, arms_max_pos_accel, arms_max_ang_speed_deg, arms_max_ang_accel_deg,
+         arms_method, arms_cutoff_hz, arms_one_euro_min_cutoff, arms_one_euro_beta, arms_one_euro_d_cutoff,
          default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
          default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
          foot_planting_velocity_threshold, foot_planting_min_height,
          foot_planting_contact_window, foot_planting_blend_factor,
-         foot_planting_root_window, foot_planting_use_mid_foot,
-         foot_planting_apply_before) = args
+         foot_planting_root_window, foot_planting_use_mid_foot) = args
         
         return build_refinement_config_from_gui(
             enabled, interpolate_missing_keyframes, use_foot_planting, translator,
@@ -927,12 +1034,13 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
             head_method, head_cutoff_hz, head_one_euro_min_cutoff, head_one_euro_beta, head_one_euro_d_cutoff,
             legs_max_pos_speed, legs_max_pos_accel, legs_max_ang_speed_deg, legs_max_ang_accel_deg,
             legs_method, legs_cutoff_hz, legs_one_euro_min_cutoff, legs_one_euro_beta, legs_one_euro_d_cutoff,
+            arms_max_pos_speed, arms_max_pos_accel, arms_max_ang_speed_deg, arms_max_ang_accel_deg,
+            arms_method, arms_cutoff_hz, arms_one_euro_min_cutoff, arms_one_euro_beta, arms_one_euro_d_cutoff,
             default_max_pos_speed, default_max_pos_accel, default_max_ang_speed_deg, default_max_ang_accel_deg,
             default_method, default_cutoff_hz, default_one_euro_min_cutoff, default_one_euro_beta, default_one_euro_d_cutoff,
             foot_planting_velocity_threshold, foot_planting_min_height,
             foot_planting_contact_window, foot_planting_blend_factor,
             foot_planting_root_window, foot_planting_use_mid_foot,
-            foot_planting_apply_before,
         )
     
     # Collect all refinement inputs in the correct order
@@ -964,6 +1072,11 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         legs_components['method'], legs_components['cutoff_hz'],
         legs_components['one_euro_min_cutoff'], legs_components['one_euro_beta'],
         legs_components['one_euro_d_cutoff'],
+        arms_components['max_pos_speed'], arms_components['max_pos_accel'],
+        arms_components['max_ang_speed_deg'], arms_components['max_ang_accel_deg'],
+        arms_components['method'], arms_components['cutoff_hz'],
+        arms_components['one_euro_min_cutoff'], arms_components['one_euro_beta'],
+        arms_components['one_euro_d_cutoff'],
         default_components['max_pos_speed'], default_components['max_pos_accel'],
         default_components['max_ang_speed_deg'], default_components['max_ang_accel_deg'],
         default_components['method'], default_components['cutoff_hz'],
@@ -972,7 +1085,6 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         foot_planting_velocity_threshold, foot_planting_min_height,
         foot_planting_contact_window, foot_planting_blend_factor,
         foot_planting_root_window, foot_planting_use_mid_foot,
-        foot_planting_apply_before,
     ]
     
     # Return components dictionary for integration
@@ -989,7 +1101,6 @@ def create_refinement_section(translator: Translator) -> Dict[str, Any]:
         "foot_planting_blend_factor": foot_planting_blend_factor,
         "foot_planting_root_window": foot_planting_root_window,
         "foot_planting_use_mid_foot": foot_planting_use_mid_foot,
-        "foot_planting_apply_before": foot_planting_apply_before,
         "config_file_upload": config_file_upload,
         "config_file_download": config_file_download,
         "save_config_btn": save_config_btn,

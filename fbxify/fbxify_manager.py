@@ -16,7 +16,6 @@ from fbxify.pose_estimation_manager import PoseEstimationManager
 from fbxify.fbx_data_prep_manager import FbxDataPrepManager
 from fbxify.utils import export_to_fbx, to_serializable
 from fbxify.refinement.refinement_manager import RefinementManager
-from tools.vis_utils import visualize_sample_together
 
 
 @dataclass
@@ -150,7 +149,7 @@ class FbxifyManager:
     
     def process_frames(self, frame_paths: List[str], profile_name: str, num_people: int,
                       bbox_dict: Optional[Dict[int, List[Tuple]]] = None,
-                      use_root_motion: bool = True, create_visualization: bool = False,
+                      use_root_motion: bool = True,
                       fps: float = 30.0, progress_callback: Optional[callable] = None,
                       lod: int = -1, body_param_sample_num: int = 5,
                       save_estimation_json: Optional[str] = None,
@@ -164,7 +163,6 @@ class FbxifyManager:
             num_people: Number of people to detect
             bbox_dict: Optional bounding box dictionary
             use_root_motion: Whether to track root motion
-            create_visualization: Whether to create visualization data
             fps: Frame rate of the animation (frames per second)
             progress_callback: Optional callback function(progress, description)
             lod: Level of Detail for mesh (-1 = no mesh, 0-6 = LOD level)
@@ -212,7 +210,9 @@ class FbxifyManager:
             self.estimation_manager.save_estimation_results(estimation_results, save_estimation_json, source_name=source_name)
         
         # Step 2: Apply refinement to estimation results if enabled (before joint mapping)
+        print(f"FbxifyManager.process_frames(): refinement_config is {'None' if refinement_config is None else 'not None'}")
         if refinement_config is not None:
+            print(f"FbxifyManager.process_frames(): Creating RefinementManager with config")
             if progress_callback:
                 progress_callback(0.5, "Applying refinement to estimation results...")
             
@@ -221,32 +221,10 @@ class FbxifyManager:
                 estimation_results,
                 progress_callback=lambda p, d: progress_callback(0.5 + p * 0.1, d) if progress_callback else None
             )
+        else:
+            print(f"FbxifyManager.process_frames(): refinement_config is None, skipping refinement")
         
-        # Step 3: Prepare visualization data if needed
-        visualization_data = [] if create_visualization else None
-        if create_visualization:
-            for frame_index, frame_path in enumerate(frame_paths):
-                frame_key = str(frame_index)
-                if frame_key in estimation_results:
-                    frame_data = estimation_results[frame_key]
-                    # Convert estimation data back to list format for visualization
-                    outputs_list = []
-                    for person_id, estimation_data in frame_data.items():
-                        # Convert lists back to numpy arrays for visualization
-                        output = {}
-                        for key, value in estimation_data.items():
-                            if isinstance(value, list):
-                                output[key] = np.array(value)
-                            else:
-                                output[key] = value
-                        outputs_list.append(output)
-                    
-                    visualization_data.append({
-                        "image": cv2.imread(frame_path),
-                        "outputs": outputs_list
-                    })
-        
-        # Step 4: Transform estimation results into FBX-ready data
+        # Step 3: Transform estimation results into FBX-ready data
         if progress_callback:
             base_progress = 0.6 if refinement_config is not None else 0.5
             progress_callback(base_progress, "Preparing FBX data...")
@@ -332,7 +310,7 @@ class FbxifyManager:
         return ProcessResult(
             joint_to_bone_mappings=joint_to_bone_mappings,
             root_motions=root_motions,
-            visualization_data=visualization_data,
+            visualization_data=None,
             frame_paths=frame_paths,
             profile_name=profile_name,
             fps=fps,
@@ -372,7 +350,9 @@ class FbxifyManager:
             # The error will be caught and shown if validation fails
         
         # Apply refinement to estimation results if enabled (before joint mapping)
+        print(f"FbxifyManager.process_from_estimation_json(): refinement_config is {'None' if refinement_config is None else 'not None'}")
         if refinement_config is not None:
+            print(f"FbxifyManager.process_from_estimation_json(): Creating RefinementManager with config")
             if progress_callback:
                 progress_callback(0.0, "Applying refinement to estimation results...")
             
@@ -381,10 +361,13 @@ class FbxifyManager:
                 estimation_results,
                 progress_callback=progress_callback
             )
+        else:
+            print(f"FbxifyManager.process_from_estimation_json(): refinement_config is None, skipping refinement")
         
         # Transform estimation results into FBX-ready data
         if progress_callback:
-            progress_callback(0.5 if refinement_config is not None else 0.0, "Preparing FBX data...")
+            base_progress = 0.5 if refinement_config is not None else 0.3
+            progress_callback(base_progress, "Preparing FBX data...")
         
         fbx_data = self.data_prep_manager.prepare_from_estimation(
             estimation_results,
@@ -402,7 +385,7 @@ class FbxifyManager:
         return ProcessResult(
             joint_to_bone_mappings=fbx_data["joint_to_bone_mappings"],
             root_motions=fbx_data["root_motions"],
-            visualization_data=None,  # Not available from JSON
+            visualization_data=None,
             frame_paths=frame_paths,
             profile_name=profile_name,
             fps=fps,
@@ -504,9 +487,28 @@ class FbxifyManager:
         """
         fbx_paths = []
         num_keyframes = len(frame_paths)
+        num_people = len(joint_to_bone_mappings.keys())
         
         for person_index, identifier in enumerate(joint_to_bone_mappings.keys()):
             root_motion = root_motions[identifier] if root_motions else None
+            
+            # Create a progress callback for this person's export
+            # Weight the progress based on which person we're processing
+            person_progress_callback = None
+            if progress_callback:
+                def make_person_callback(person_idx, total_people, main_callback):
+                    # Each person gets an equal slice of progress
+                    person_start = person_idx / total_people
+                    person_end = (person_idx + 1) / total_people
+                    person_range = person_end - person_start
+                    
+                    def inner_callback(normalized_progress, description):
+                        # normalized_progress is 0.0 to 1.0 for this person's export
+                        # Map it to this person's slice of overall progress
+                        weighted_progress = person_start + (normalized_progress * person_range)
+                        main_callback(weighted_progress, description)
+                    return inner_callback
+                person_progress_callback = make_person_callback(person_index, num_people, progress_callback)
             
             fbx_path = export_to_fbx(
                 self.data_prep_manager.create_metadata(profile_name, identifier, num_keyframes=num_keyframes, fps=fps),
@@ -515,93 +517,12 @@ class FbxifyManager:
                 self.data_prep_manager.get_armature_rest_pose(profile_name),
                 self.estimation_manager.faces,
                 mesh_obj_path=mesh_obj_path if lod >= 0 and profile_name == "mhr" else None,
-                lod_fbx_path=lod_fbx_path if lod >= 0 and profile_name == "mhr" else None
+                lod_fbx_path=lod_fbx_path if lod >= 0 and profile_name == "mhr" else None,
+                progress_callback=person_progress_callback
             )
             
             if fbx_path is not None:
                 fbx_paths.append(fbx_path)
 
-            if progress_callback:
-                progress = (person_index + 1) / len(joint_to_bone_mappings.keys())
-                progress_callback(progress, f"Processing person {person_index + 1}")
-
         return fbx_paths
     
-    def export_visualization(self, visualization_data: List[Dict], fps: int = 30,
-                            progress_callback: Optional[callable] = None) -> Optional[str]:
-        """
-        Create a video from visualization frames using ffmpeg.
-        
-        Args:
-            visualization_data: List of dicts with "image" and "outputs" keys
-            fps: Frame rate for output video
-            progress_callback: Optional callback function(progress, description)
-            
-        Returns:
-            Path to output video file, or None if no frames
-        """
-        if not visualization_data:
-            return None
-            
-        # Create temp directory for frames
-        temp_dir = tempfile.mkdtemp(prefix="sam3d_vis_frames_")
-        
-        try:
-            if progress_callback:
-                progress_callback(0.0, "Creating visualization frames")
-            
-            # Save all visualization frames
-            frame_paths = []
-            for idx, vis_data in enumerate(visualization_data):
-                rend_img = visualize_sample_together(vis_data["image"], vis_data["outputs"], self.estimation_manager.faces)
-                frame_path = os.path.join(temp_dir, f"frame_{idx:06d}.jpg")
-                cv2.imwrite(frame_path, rend_img.astype(np.uint8))
-                frame_paths.append(frame_path)
-            
-            if not frame_paths:
-                return None
-
-            if len(frame_paths) == 1:
-                # Copy the single frame to a persistent temp file before cleanup
-                output_image = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
-                output_image.close()
-                shutil.copy2(frame_paths[0], output_image.name)
-                return output_image.name
-            
-            # Get frame dimensions from first frame
-            first_frame = cv2.imread(frame_paths[0])
-            height, width = first_frame.shape[:2]
-            
-            # Create output video path
-            output_video = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-            output_video.close()
-
-            # Use ffmpeg to create video
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-y',  # Overwrite output file
-                '-framerate', str(fps),
-                '-i', os.path.join(temp_dir, 'frame_%06d.jpg'),
-                '-c:v', 'libx264',
-                '-pix_fmt', 'yuv420p',
-                '-crf', '23',
-                output_video.name
-            ]
-
-            try:
-                subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-            except subprocess.CalledProcessError as e:
-                print(f"FFmpeg error: {e.stderr.decode()}")
-                raise
-            except FileNotFoundError:
-                raise RuntimeError("FFmpeg not found. Please install FFmpeg to create visualization videos.")
-
-            if progress_callback:
-                progress_callback(1.0, "Visualization created")
-            
-            return output_video.name
-        except Exception as e:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            raise
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)

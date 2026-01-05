@@ -20,11 +20,8 @@ def create_developer_section(translator: Translator) -> Dict[str, Any]:
     """
     components = {}
     
-    with gr.Accordion(translator.t("ui.developer_options"), open=False):
-        components['create_visualization'] = gr.Checkbox(
-            label=translator.t("ui.create_visualization"),
-            value=False
-        )
+    # Developer section is currently empty (create_visualization was removed)
+    # Keeping the function for potential future developer options
     
     return components
 
@@ -37,9 +34,6 @@ def update_developer_language(lang: str) -> Tuple[Any, ...]:
         lang: Language code
         
     Returns:
-        Tuple of updates for all developer components
+        Tuple of updates for all developer components (currently empty)
     """
-    t = Translator(lang)
-    return (
-        gr.update(label=t.t("ui.create_visualization")),  # create_visualization
-    )
+    return ()

@@ -356,7 +356,7 @@ class PoseEstimationManager:
         outputs_raw = self.estimator.process_one_image(image_path, bboxes=bboxes_numpy, cam_int=self.cached_cam_int)
         timer_process = time.time()
         process_time = timer_process - timer_start
-        print(f"  [TIMER] process_one_image: {process_time:.3f}s")
+        # Note: Detailed breakdown is printed inside process_one_image
         
         # Check if mesh was generated (pred_vertices present)
         mesh_generated = False

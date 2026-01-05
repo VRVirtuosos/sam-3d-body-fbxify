@@ -5,6 +5,8 @@ import json
 import subprocess
 import time
 import shutil
+import re
+from tqdm import tqdm
 
 from fbxify.metadata import PROFILES, MHR_KEYPOINT_INDEX
 
@@ -52,7 +54,8 @@ def to_serializable(obj, _seen=None):
     return obj
 
 
-def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_obj_path=None, lod_fbx_path=None):
+def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_obj_path=None, lod_fbx_path=None, 
+                  progress_callback=None):
     tmp_dir = tempfile.mkdtemp(prefix="sam3d_fbx_")
     
     try:
@@ -108,7 +111,71 @@ def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_o
         else:
             cmd_args.extend(["", ""])  # Empty strings to maintain argument count
         
-        subprocess.run(cmd_args, check=True, cwd=tmp_dir)
+        # Get num_keyframes for progress bar
+        num_keyframes = metadata.get("num_keyframes", 0)
+        
+        # Run subprocess with stdout capture to parse progress
+        process = subprocess.Popen(
+            cmd_args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1,
+            cwd=tmp_dir
+        )
+        
+        # Create progress bar
+        progress_bar = tqdm(total=num_keyframes, desc="Applying poses", unit="keyframe") if num_keyframes > 0 else None
+        
+        # Parse output line by line
+        progress_pattern = re.compile(r'PROGRESS: (\d+)/(\d+)')
+        
+        try:
+            for line in process.stdout:
+                # Parse progress messages (don't print these)
+                match = progress_pattern.search(line)
+                if match:
+                    frame_num = int(match.group(1))
+                    total_frames = int(match.group(2))
+                    if progress_bar:
+                        progress_bar.n = frame_num
+                        progress_bar.total = total_frames
+                        progress_bar.refresh()
+                        # Close progress bar immediately when we reach 100%
+                        if frame_num >= total_frames:
+                            progress_bar.close()
+                            progress_bar = None
+                    
+                    # Update progress if callback is provided
+                    # Pass normalized progress (0.0 to 1.0) - caller will handle weighing
+                    if progress_callback and total_frames > 0:
+                        tqdm_progress = frame_num / total_frames
+                        progress_callback(tqdm_progress, f"Applying poses: {frame_num}/{total_frames}")
+                    
+                    # Skip printing the PROGRESS line
+                    continue
+                
+                # Print all other output (warnings, errors, etc.)
+                # Use tqdm.write() to avoid interfering with progress bar if it exists
+                if progress_bar:
+                    tqdm.write(line.rstrip())
+                else:
+                    print(line, end='', flush=True)
+            
+            # Wait for process to complete (should already be done since we read all output)
+            return_code = process.wait()
+            
+            # Ensure progress bar is closed (in case we didn't reach 100% via PROGRESS messages)
+            if progress_bar:
+                progress_bar.close()
+                progress_bar = None
+            
+            if return_code != 0:
+                raise subprocess.CalledProcessError(return_code, cmd_args)
+        except Exception as e:
+            if progress_bar:
+                progress_bar.close()
+            raise
         
         # Use profile_name and id from metadata for filename
         profile_name = metadata.get("profile_name", "unknown")

@@ -782,7 +782,6 @@ def breadth_first_pose_application(joint_mapping, frame_idx):
             else:
                 set_pose_from_global_rotation(pbone, R_global)
                 applied_bones.add(bone_dict['name'])
-                bpy.context.view_layer.update()
 
             for child in bone_dict.get("children", []):
                 next_layer.append(child)
@@ -798,7 +797,8 @@ def breadth_first_pose_application(joint_mapping, frame_idx):
     for bone in blender_pose_bones:
         bone.keyframe_insert("rotation_quaternion", frame=frame_idx + 1)
 
-    print(f"Applied pose to {len(applied_bones)} bones on keyframe {frame_idx + 1}")
+    # Print progress in parseable format for parent process
+    print(f"PROGRESS: {frame_idx + 1}/{num_keyframes}", flush=True)
     reset_pose_bones(blender_pose_bones)
 
 for frame_idx in range(num_keyframes):
@@ -811,14 +811,6 @@ bpy.ops.object.mode_set(mode="OBJECT")
 # ------------------------------------------------------------------------
 bpy.ops.object.mode_set(mode="OBJECT")
 
-# TODO: This is basically a hardcoded value for my default extracted armature's height to hip bone, in its rest pose
-# We should use extracted values from MHR to get height and reinforce armature scaling, height, weight, face values, etc.
-try:
-    rest_pose_hips_offset = rest_pose[list(rest_pose.keys())[0]]["offset"][1] / 100.0 # cm -> m
-except:
-    print("  WARNING: No rest pose hips offset (y value from floor) found, using default value of 0.0")
-    rest_pose_hips_offset = 0.0
-
 if root_motion is not None and len(root_motion) > 0: # root motion can be passed empty, if the user doesn't want root motion
     # In object mode, use root_motion, which is a list of global rotation euler angles and camera translation vectors
     # apply keyframes to the armature, not any bone
@@ -828,7 +820,13 @@ if root_motion is not None and len(root_motion) > 0: # root motion can be passed
         # Use camera translation as-is (the base 90° rotation at frame 0 handles coord system)
         cam_translation = root_motion_entry["pred_cam_t"]
 
-        arm_obj.location = Vector((cam_translation[0], cam_translation[2], cam_translation[1] - rest_pose_hips_offset))
+        print(f"cam_translation: {cam_translation}")
+
+        # TODO: This is really weird, but pred_cam_t has a y (up) value that is usually 1, and when people squat in test cases it goes up? Jumping makes it go down? Consistently?
+        # Maybe need to raise an issue to MHR or ask them? For now, the weird solution is to offset the hip bone by its rest_pose height, then use "1 - cam_translation[1]"
+        # for the up value because that weirdly works, on all my test cases. Dear God, let this be the only 'Q_rsqrt' solution in the codebase. 
+        # arm_obj.location = Vector((cam_translation[0], cam_translation[2], cam_translation[1]))
+        arm_obj.location = Vector((cam_translation[0], cam_translation[2], 1 - cam_translation[1]))
 
         # As far as I can tell, this value of global rotation is already passed to the root bone (hips), but if you'd rather 
         # have rotation be a "root" motion, apply it here and skip in pose application

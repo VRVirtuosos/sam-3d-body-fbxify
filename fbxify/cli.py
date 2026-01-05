@@ -127,13 +127,6 @@ def parse_args():
         help="Disable root motion"
     )
     
-    # Visualization
-    parser.add_argument(
-        "--create_visualization",
-        action="store_true",
-        help="Create visualization video"
-    )
-    
     # Estimation JSON options
     parser.add_argument(
         "--save_estimation_json",
@@ -334,7 +327,6 @@ def main():
             num_people,
             bbox_dict,
             args.use_root_motion,
-            args.create_visualization,
             fps,
             progress_callback,
             save_estimation_json=args.save_estimation_json
@@ -369,21 +361,6 @@ def main():
         print(f"Exported {len(fbx_paths)} FBX file(s):")
         for fbx_path in fbx_paths:
             print(f"  - {fbx_path}")
-        
-        # Export visualization if requested
-        if args.create_visualization and process_result.visualization_data:
-            print("Creating visualization...")
-            vis_path = manager.export_visualization(
-                process_result.visualization_data,
-                progress_callback=progress_callback
-            )
-            if vis_path:
-                if args.output_dir:
-                    filename = os.path.basename(vis_path)
-                    dest_path = os.path.join(args.output_dir, filename)
-                    shutil.copy2(vis_path, dest_path)
-                    vis_path = dest_path
-                print(f"Visualization saved: {vis_path}")
         
     except Exception as e:
         print(f"Error: {e}")

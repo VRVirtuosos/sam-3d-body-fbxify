@@ -20,8 +20,7 @@
       "The following are optional features:",
       "Upload your own bboxes and camera intrinsics file from gta-link, boxmot, colmap",
       "For video, you may or may not want root motion for your armature - check the box if you do",
-      "Apply standard mocap-style smoothing to the animation via Refinement. Enabled by default with some customizable settings.",
-      "You may also create a visualization video of the animation for debugging purposes."
+      "Apply standard mocap-style smoothing to the animation via Refinement. Enabled by default with some customizable settings."
     ]
   },
   "ui": {
@@ -52,7 +51,6 @@
     "pose_json_file_info": "Upload a pose estimation JSON file, or it will be auto-populated after estimation",
     "output_files": "📦 Generated Files",
     "developer_options": "Developer Options",
-    "create_visualization": "Create Visualization",
     "debug_save_results": "💾 Save Results for Re-export",
     "debug_saved_timestamps": "📁 Saved Timestamps",
     "debug_reexport_btn": "🔄 Re-export from Saved",
@@ -74,6 +72,7 @@
         "fingers": "Fingers",
         "head": "Head",
         "legs": "Legs",
+        "arms": "Arms",
         "default": "Default"
       },
       "max_pos_speed": "Max Positional Speed",
@@ -118,16 +117,13 @@
         "root_smoothing_window": "Root Smoothing Window",
         "root_smoothing_window_info": "Number of frames to use for smoothing the adjusted root motion",
         "use_mid_foot": "Use Mid Foot",
-        "use_mid_foot_info": "Use mid_foot (average of heel/toes) instead of ankle for foot position",
-        "apply_before_root_smoothing": "Apply Before Root Smoothing",
-        "apply_before_root_smoothing_info": "Apply foot planting before root motion smoothing (otherwise applies after)"
+        "use_mid_foot_info": "Use mid_foot (average of heel/toes) instead of ankle for foot position"
       }
     }
   },
   "progress": {
     "processing_keyframes": "📦 Processing keyframes...",
     "processing_person": "📦 Processing person...",
-    "creating_visualization": "🎨 Creating visualization...",
     "reexporting": "🔄 Re-exporting from saved results..."
   },
   "errors": {

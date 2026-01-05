@@ -20,8 +20,7 @@
       "Les fonctionnalités suivantes sont optionnelles :",
       "Téléchargez vos propres fichiers de bboxes et d'intrinsèques de caméra depuis gta-link, boxmot, colmap",
       "Pour la vidéo, vous pouvez ou non vouloir le mouvement de racine pour votre armature - cochez la case si vous le souhaitez",
-      "Appliquez un lissage de style mocap standard à l'animation via Refinement. Activé par défaut avec quelques paramètres personnalisables.",
-      "Vous pouvez également créer une vidéo de visualisation de l'animation à des fins de débogage."
+      "Appliquez un lissage de style mocap standard à l'animation via Refinement. Activé par défaut avec quelques paramètres personnalisables."
     ]
   },
   "ui": {
@@ -52,7 +51,6 @@
     "pose_json_file_info": "Téléchargez un fichier JSON d'estimation de pose, ou il sera rempli automatiquement après l'estimation",
     "output_files": "📦 Fichiers Générés",
     "developer_options": "Options Développeur",
-    "create_visualization": "Créer une Visualisation",
     "debug_save_results": "💾 Enregistrer les Résultats pour Ré-exporter",
     "debug_saved_timestamps": "📁 Horodatages Enregistrés",
     "debug_reexport_btn": "🔄 Ré-exporter depuis Enregistré",
@@ -74,6 +72,7 @@
         "fingers": "Doigts",
         "head": "Tête",
         "legs": "Jambes",
+        "arms": "Bras",
         "default": "Par Défaut"
       },
       "max_pos_speed": "Vitesse Positionnelle Maximale",
@@ -102,13 +101,29 @@
       "root_cutoff_z_hz": "Coupure Racine Z (Hz)",
       "root_cutoff_z_hz_info": "Fréquence de coupure pour le mouvement de racine vertical (Z)",
       "interpolate_missing_keyframes": "Interpoler les images clés manquantes",
-      "interpolate_missing_keyframes_info": "Lorsqu'elle est activée, les images manquantes (où aucune personne n'a été détectée) seront interpolées en utilisant slerp pour les rotations et l'interpolation linéaire pour les vecteurs. Lorsqu'elle est désactivée, les images manquantes sont ignorées pendant le raffinement."
+      "interpolate_missing_keyframes_info": "Lorsqu'elle est activée, les images manquantes (où aucune personne n'a été détectée) seront interpolées en utilisant slerp pour les rotations et l'interpolation linéaire pour les vecteurs. Lorsqu'elle est désactivée, les images manquantes sont ignorées pendant le raffinement.",
+      "use_foot_planting": "Utiliser le Plantage de Pied",
+      "use_foot_planting_info": "Activer le plantage de pied pour ajuster le mouvement de racine en fonction du contact du pied, réduisant les saccades et créant un mouvement de marche/course plus naturel",
+      "foot_planting": {
+        "title": "Plantage de Pied",
+        "foot_contact_velocity_threshold": "Seuil de Vitesse de Contact du Pied (m/s)",
+        "foot_contact_velocity_threshold_info": "Le pied est considéré comme 'planté' si sa vitesse est inférieure à ce seuil",
+        "foot_contact_min_height": "Hauteur Minimale de Contact du Pied (m)",
+        "foot_contact_min_height_info": "Le pied doit être en dessous de cette hauteur (coordonnée Y) pour être considéré en contact",
+        "contact_smoothing_window": "Fenêtre de Lissage de Contact",
+        "contact_smoothing_window_info": "Nombre d'images à utiliser pour lisser la détection de contact (réduit le scintillement)",
+        "blend_factor": "Facteur de Mélange",
+        "blend_factor_info": "Combien mélanger l'ajustement de racine basé sur le pied avec le mouvement de racine original (0-1, plus élevé = plus d'ajustement)",
+        "root_smoothing_window": "Fenêtre de Lissage de Racine",
+        "root_smoothing_window_info": "Nombre d'images à utiliser pour lisser le mouvement de racine ajusté",
+        "use_mid_foot": "Utiliser le Milieu du Pied",
+        "use_mid_foot_info": "Utiliser le milieu du pied (moyenne du talon/orteils) au lieu de la cheville pour la position du pied"
+      }
     }
   },
   "progress": {
     "processing_keyframes": "📦 Traitement des images clés...",
     "processing_person": "📦 Traitement de la personne...",
-    "creating_visualization": "🎨 Création de la visualisation...",
     "reexporting": "🔄 Ré-exportation depuis les résultats enregistrés..."
   },
   "errors": {

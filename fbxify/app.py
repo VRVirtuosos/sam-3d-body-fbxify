@@ -160,11 +160,13 @@ def create_app(manager: FbxifyManager):
         )
     
     def generate_fbx(pose_json_file, profile_name, use_root_motion, include_mesh, lod, body_param_sample_num,
-                    create_visualization, input_file,
+                    input_file,
                     refinement_config,  # Single refinement config object from state
                     progress=gr.Progress()):
         """Generate FBX from pose estimation JSON - Step 2."""
         output_files = []
+
+        print(f"generate_fbx(): Starting generation")
         
         try:
             if pose_json_file is None:
@@ -175,11 +177,13 @@ def create_app(manager: FbxifyManager):
                 raise ValueError("Please provide a pose estimation JSON file")
             json_path = pose_json_file.name if hasattr(pose_json_file, 'name') else pose_json_file
             
-            # Refinement config is already built and stored in state
-            # If it's None, build it on-demand from current inputs (fallback)
+            # Refinement config is already built and stored in state from the .then() chain
+            # Do NOT use fallback - the state should always be set correctly
+            print(f"generate_fbx(): refinement_config from state is {'None' if refinement_config is None else 'not None'}")
             if refinement_config is None:
-                # Fallback: build config from current state if state wasn't updated
-                refinement_config = build_refinement_config_wrapper(*[comp.value if hasattr(comp, 'value') else None for comp in all_refinement_inputs])
+                print("generate_fbx(): WARNING - refinement_config is None, skipping refinement (this is expected if checkbox is unchecked)")
+            else:
+                print(f"generate_fbx(): Using config from state")
             
             # Load from estimation JSON and apply refinement if enabled (refinement happens before joint mapping)
             def processing_progress(progress_value, description):
@@ -196,10 +200,15 @@ def create_app(manager: FbxifyManager):
             )
 
             # Export FBX files
+            # Map export progress (0-1) to the 0.3-0.9 range in overall progress
             def export_progress(progress_value, description):
-                base_progress = 0.3
                 if progress is not None:
-                    progress(base_progress + progress_value * 0.6, desc=description)
+                    # progress_value is 0.0 to 1.0 from export_fbx_files
+                    # Map it to 0.3-0.9 range (export takes 60% of remaining progress after processing)
+                    base_progress = 0.3
+                    export_range = 0.6  # 0.9 - 0.3
+                    mapped_progress = base_progress + (progress_value * export_range)
+                    progress(mapped_progress, desc=description)
 
             # Convert lod to int if it's a float from slider
             lod_int = int(lod) if lod is not None else -1
@@ -228,10 +237,10 @@ def create_app(manager: FbxifyManager):
             )
             output_files.extend(fbx_paths)
 
-            # Note: Visualization is not available when loading from JSON
-            # since we don't have the original images
+            print(f"generate_fbx(): FBX files exported: {fbx_paths}")
 
         except Exception as e:
+            print(f"generate_fbx(): Error: {e}")
             error_type = type(e).__name__
             error_msg = str(e)
             if error_msg:
@@ -264,7 +273,7 @@ def create_app(manager: FbxifyManager):
             *entry_updates,   # input_file, use_bbox, bbox_file, num_people, fov_method, fov_file, sample_number, estimate_pose_btn
             *fbx_processing_updates,    # profile_name, pose_json_file, generate_fbx_btn, output_files
             *fbx_options_updates,  # use_root_motion, include_mesh, lod, body_param_sample_num
-            *developer_updates,  # create_visualization
+            *developer_updates,  # (empty now)
         )
 
     def detect_and_set_language():
@@ -309,8 +318,7 @@ def create_app(manager: FbxifyManager):
                 entry_components['estimate_pose_btn'],  # entry
                 fbx_processing_components['profile_name'], fbx_processing_components['pose_json_file'], fbx_processing_components['generate_fbx_btn'], fbx_processing_components['output_files'],  # fbx processing
                 fbx_options_components['use_root_motion'], fbx_options_components['include_mesh'],
-                fbx_options_components['lod'], fbx_options_components['body_param_sample_num'],  # fbx options
-                dev_components['create_visualization']  # developer
+                fbx_options_components['lod'], fbx_options_components['body_param_sample_num']  # fbx options
             ]
         )
         
@@ -339,6 +347,16 @@ def create_app(manager: FbxifyManager):
         all_refinement_inputs = refinement_components['all_refinement_inputs']
         build_refinement_config_wrapper = refinement_components['build_refinement_config_wrapper']
         refinement_config_state = refinement_components['refinement_config_state']
+        
+        # Helper function to build config with logging
+        def build_and_log_config(*args):
+            """Helper function to build config with logging."""
+            print(f"build_and_log_config(): Building refinement config from {len(args)} inputs")
+            if args:
+                print(f"build_and_log_config(): First input (refinement_enabled) = {args[0]}")
+            config = build_refinement_config_wrapper(*args)
+            print(f"build_and_log_config(): Built config is {'None' if config is None else 'not None'}")
+            return config
 
         def toggle_estimate_pose_button(input_file):
             """Enable/disable Estimate Pose button based on whether file is uploaded."""
@@ -424,7 +442,7 @@ def create_app(manager: FbxifyManager):
             outputs=[entry_components['estimate_pose_btn']]
         ).then(
             # First, build the refinement config from all inputs
-            fn=build_refinement_config_wrapper,
+            fn=lambda *args: build_and_log_config(*args),
             inputs=all_refinement_inputs,
             outputs=[refinement_config_state]
         ).then(
@@ -437,7 +455,6 @@ def create_app(manager: FbxifyManager):
                 fbx_options_components['include_mesh'],
                 fbx_options_components['lod'],
                 fbx_options_components['body_param_sample_num'],
-                dev_components['create_visualization'],
                 entry_components['input_file'],  # Add input_file to check if it still exists
                 refinement_config_state,
             ],

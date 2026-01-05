@@ -82,15 +82,15 @@ def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_o
         lod_fbx_path_tmp = None
         mesh_obj_path_tmp = None
         
-        if mesh_obj_path and lod_fbx_path:
-            # Check if files exist and are not empty
-            if os.path.exists(mesh_obj_path) and os.path.getsize(mesh_obj_path) > 0:
-                mesh_obj_path_tmp = os.path.join(tmp_dir, "mesh.obj")
-                shutil.copyfile(mesh_obj_path, mesh_obj_path_tmp)
-            
-            if os.path.exists(lod_fbx_path) and os.path.getsize(lod_fbx_path) > 0:
-                lod_fbx_path_tmp = os.path.join(tmp_dir, "lod.fbx")
-                shutil.copyfile(lod_fbx_path, lod_fbx_path_tmp)
+        # Copy LOD FBX if provided (this contains the mesh for MHR profile)
+        if lod_fbx_path and os.path.exists(lod_fbx_path) and os.path.getsize(lod_fbx_path) > 0:
+            lod_fbx_path_tmp = os.path.join(tmp_dir, "lod.fbx")
+            shutil.copyfile(lod_fbx_path, lod_fbx_path_tmp)
+        
+        # Copy mesh OBJ if provided (optional, used for reskinning)
+        if mesh_obj_path and os.path.exists(mesh_obj_path) and os.path.getsize(mesh_obj_path) > 0:
+            mesh_obj_path_tmp = os.path.join(tmp_dir, "mesh.obj")
+            shutil.copyfile(mesh_obj_path, mesh_obj_path_tmp)
 
         # Copy the contents of blender_script.py to the temporary directory
         # This allows editing the file directly with IDE support
@@ -105,9 +105,9 @@ def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_o
             metadata_path, joint_mapping_path, root_motion_path, rest_pose_path, faces_path, fbx_path
         ]
         
-        # Add mesh paths if provided
-        if mesh_obj_path_tmp and lod_fbx_path_tmp:
-            cmd_args.extend([lod_fbx_path_tmp, mesh_obj_path_tmp])
+        # Add mesh paths if provided (at least one must be provided for mesh inclusion)
+        if lod_fbx_path_tmp or mesh_obj_path_tmp:
+            cmd_args.extend([lod_fbx_path_tmp or "", mesh_obj_path_tmp or ""])
         else:
             cmd_args.extend(["", ""])  # Empty strings to maintain argument count
         
@@ -249,14 +249,12 @@ def add_helper_keypoints(joints_3d):
     
     # Chest
     chest = _interpolate_curve_smooth(spine, chest_hint, neck, 2/3)
-    
-    # Lower Head
-    left_acromion = kp("left_acromion")
-    right_acromion = kp("right_acromion")
-    occipital = (left_acromion + right_acromion) * 0.5
 
     # Head
     head = _compute_head_position(joints_3d, body_up, neck)
+    
+    # Lower Head
+    occipital = _compute_occipital(neck, head, kp("nose"), kp("right_ear"), ratio=0.8, down_offset_ratio=0.08)
     
     # Shoulders
     left_shoulder = kp("left_shoulder")
@@ -287,6 +285,89 @@ def add_helper_keypoints(joints_3d):
 
     return joints_3d
 
+
+
+def _to_vec3(x):
+    """Accept list/tuple/np.array; return float64 (3,)."""
+    v = np.asarray(x, dtype=np.float64).reshape(3)
+    return v
+
+def _normalize(v):
+    n = float(np.linalg.norm(v))
+    if n < 1e-6:
+        return np.zeros(3, dtype=np.float64), 0.0
+    return v / n, n
+
+def _compute_occipital(
+    neck,
+    head,
+    nose,
+    right_ear,
+    ratio=0.80,
+    down_offset_ratio=0.08,
+):
+    """
+    Compute a 'skull_base' point (neck↔head connection center) using:
+      - a point at t% along the neck→head_center segment, then
+      - a downward normal derived from the plane defined by (neck→head_center, nose-right_ear).
+
+    Inputs are 3D points (iterables of length 3).
+    Returns:
+      skull_base (np.ndarray shape (3,))
+      down_dir   (np.ndarray shape (3,))  # unit vector (or zeros if degenerate)
+
+    Notes:
+      - 'down_offset_ratio' is relative to head scale: ||head - neck||.
+      - If the plane is degenerate (colinear), it falls back to the un-offset point.
+    """
+    neck = _to_vec3(neck)
+    head = _to_vec3(head)
+    nose = _to_vec3(nose)
+    right_ear = _to_vec3(right_ear)
+
+    # Base point at 80% (or t) along neck→head.
+    nh = head - neck
+    nh_dir, nh_len = _normalize(nh)
+    if nh_len < 1e-6:
+        # Head and neck coincide; can't do anything meaningful.
+        return neck.copy()
+
+    ratio = float(np.clip(ratio, 0.0, 1.0))
+    base = neck + ratio * nh
+
+    # Define plane using:
+    #   a = neck→head direction
+    #   b = (nose - right_ear) as a face-ish axis
+    # Plane normal: n = a × b
+    b = nose - right_ear
+    n = np.cross(nh_dir, b)
+    down_dir, n_len = _normalize(n)
+
+    if n_len < 1e-6:
+        # Degenerate: can't compute a stable normal, so return the base point.
+        return base
+
+    # Choose sign so "down" points toward the neck (prevents flipping).
+    # Use the full neck→head direction as a stable reference (more stable than base→neck).
+    # We want down_dir to be generally aligned with the direction toward the neck.
+    # Project down_dir onto the direction from head to neck (-nh_dir)
+    proj_toward_neck = np.dot(down_dir, -nh_dir)
+    
+    # Use a threshold to avoid unstable flipping when projection is near zero
+    # This prevents rapid sign changes when the cross product direction is nearly
+    # perpendicular to the neck→head axis
+    threshold = 0.05  # Only flip if clearly misaligned
+    if proj_toward_neck < -threshold:
+        down_dir = -down_dir
+    # If near zero, maintain previous sign (hysteresis) or use a default
+    # For simplicity, if very close to zero, don't flip (maintain current orientation)
+
+    # Offset amount (scaled by neck→head length)
+    down_offset_ratio = float(max(0.0, down_offset_ratio))
+    offset = down_offset_ratio * nh_len
+
+    skull_base = base + down_dir * offset
+    return skull_base
 
 def _interpolate_curve(p0, p1, p2, t):
     """3点曲線補間"""

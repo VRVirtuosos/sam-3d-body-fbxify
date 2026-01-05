@@ -820,8 +820,6 @@ if root_motion is not None and len(root_motion) > 0: # root motion can be passed
         # Use camera translation as-is (the base 90° rotation at frame 0 handles coord system)
         cam_translation = root_motion_entry["pred_cam_t"]
 
-        print(f"cam_translation: {cam_translation}")
-
         # TODO: This is really weird, but pred_cam_t has a y (up) value that is usually 1, and when people squat in test cases it goes up? Jumping makes it go down? Consistently?
         # Maybe need to raise an issue to MHR or ask them? For now, the weird solution is to offset the hip bone by its rest_pose height, then use "1 - cam_translation[1]"
         # for the up value because that weirdly works, on all my test cases. Dear God, let this be the only 'Q_rsqrt' solution in the codebase. 

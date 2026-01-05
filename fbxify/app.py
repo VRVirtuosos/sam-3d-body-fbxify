@@ -166,7 +166,6 @@ def create_app(manager: FbxifyManager):
         """Generate FBX from pose estimation JSON - Step 2."""
         output_files = []
 
-        print(f"generate_fbx(): Starting generation")
         
         try:
             if pose_json_file is None:
@@ -176,14 +175,6 @@ def create_app(manager: FbxifyManager):
             if pose_json_file is None:
                 raise ValueError("Please provide a pose estimation JSON file")
             json_path = pose_json_file.name if hasattr(pose_json_file, 'name') else pose_json_file
-            
-            # Refinement config is already built and stored in state from the .then() chain
-            # Do NOT use fallback - the state should always be set correctly
-            print(f"generate_fbx(): refinement_config from state is {'None' if refinement_config is None else 'not None'}")
-            if refinement_config is None:
-                print("generate_fbx(): WARNING - refinement_config is None, skipping refinement (this is expected if checkbox is unchecked)")
-            else:
-                print(f"generate_fbx(): Using config from state")
             
             # Load from estimation JSON and apply refinement if enabled (refinement happens before joint mapping)
             def processing_progress(progress_value, description):
@@ -237,10 +228,7 @@ def create_app(manager: FbxifyManager):
             )
             output_files.extend(fbx_paths)
 
-            print(f"generate_fbx(): FBX files exported: {fbx_paths}")
-
         except Exception as e:
-            print(f"generate_fbx(): Error: {e}")
             error_type = type(e).__name__
             error_msg = str(e)
             if error_msg:

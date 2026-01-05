@@ -131,6 +131,12 @@ class FbxDataPrepManager:
             for person_id_str, estimation_data in frame_data.items():
                 person_id = str(person_id_str)
                 
+                # Skip if required data is None (missing frame)
+                if (estimation_data.get("pred_joint_coords") is None or 
+                    estimation_data.get("pred_global_rots") is None or 
+                    estimation_data.get("pred_keypoints_3d") is None):
+                    continue
+                
                 # Convert estimation data back to numpy arrays for processing
                 joint_coords = np.array(estimation_data["pred_joint_coords"])
                 joint_rotations = np.array(estimation_data["pred_global_rots"])
@@ -147,11 +153,14 @@ class FbxDataPrepManager:
                 
                 # Add root motion if enabled
                 if use_root_motion:
-                    root_motion = root_motions[person_id]
-                    root_motion.append({
-                        "global_rot": estimation_data["global_rot"],
-                        "pred_cam_t": estimation_data["pred_cam_t"],
-                    })
+                    # Skip if root motion data is None
+                    if (estimation_data.get("global_rot") is not None and 
+                        estimation_data.get("pred_cam_t") is not None):
+                        root_motion = root_motions[person_id]
+                        root_motion.append({
+                            "global_rot": estimation_data["global_rot"],
+                            "pred_cam_t": estimation_data["pred_cam_t"],
+                        })
         
         return {
             "joint_to_bone_mappings": joint_to_bone_mappings,

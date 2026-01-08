@@ -8,6 +8,7 @@ __pycache__/
 /cache/
 /temp/
 /blender_debug/
+/input/
 
 # C extensions
 *.so

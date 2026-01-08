@@ -21,7 +21,7 @@ This fork extends SAM 3D Body with **FBXify**, a tool that allows you to export 
 
 ### Features
 
-- **Export armature-only FBX files** from SAM 3D Body pose estimates
+- **Export FBX files** from SAM 3D Body pose estimates. Export just an armature, or through the MHR armature selection an estimate of the person's body can also be exported
 - **Support for multiple rig formats:** MHR, Mixamo, and Unity character remapping
 - **Video processing:** Either automatically detects the closest person or allows bbox submitting to applies all keyframes to create an action for each person passed
 - **Image processing:** Single frame pose estimation and export
@@ -70,11 +70,10 @@ For complete instructions, see [fbxify/Mapping_Guide.md](fbxify/Mapping_Guide.md
 
 Future improvements planned for FBXify:
 
-1. Add option to scale the armature based on estimator returned values
-2. Rig an MHR mesh to the mixamo/unity rigs
-3. Complete CLI to allow for external docker orchestrator commands
-4. Facial animation integration (MHR specific maybe?)
-5. Camera extrinsics
+1. Camera extrinsics
+2. Extend the mesh capabilities by providing lod\<x\>_mixamo.fbx, in addition to MHR
+3. Facial animation integration (MHR specific maybe?)
+4. Add option to scale the armature based on estimator returned values
 
 # SAM 3D
 

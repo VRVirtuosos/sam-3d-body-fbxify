@@ -45,7 +45,7 @@
                             "method": "keypoint_with_global_rot_roll",
                             "point_reference": ["left_elbow", "left_wrist"],
                             "roll_reference": "l_lowarm",
-                            "roll_additional_from_reference": 90,
+                            "roll_additional_from_reference": 0,
                             "children": [
                               {
                                 "name": "mixamorig:LeftHand",
@@ -59,21 +59,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["left_forefinger_third_joint", "left_forefinger2"],
                                     "roll_reference": "l_index1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:LeftHandIndex2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["left_forefinger2", "left_forefinger3"],
                                         "roll_reference": "l_index2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:LeftHandIndex3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["left_forefinger3", "left_forefinger4"],
                                             "roll_reference": "l_index3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]
@@ -85,21 +85,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["left_middle_finger_third_joint", "left_middle_finger2"],
                                     "roll_reference": "l_middle1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:LeftHandMiddle2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["left_middle_finger2", "left_middle_finger3"],
                                         "roll_reference": "l_middle2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:LeftHandMiddle3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["left_middle_finger3", "left_middle_finger4"],
                                             "roll_reference": "l_middle3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]
@@ -111,21 +111,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["left_pinky_finger_third_joint", "left_pinky_finger2"],
                                     "roll_reference": "l_pinky1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:LeftHandPinky2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["left_pinky_finger2", "left_pinky_finger3"],
                                         "roll_reference": "l_pinky2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:LeftHandPinky3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["left_pinky_finger3", "left_pinky_finger4"],
                                             "roll_reference": "l_pinky3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]
@@ -137,21 +137,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["left_ring_finger_third_joint", "left_ring_finger2"],
                                     "roll_reference": "l_ring1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:LeftHandRing2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["left_ring_finger2", "left_ring_finger3"],
                                         "roll_reference": "l_ring2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:LeftHandRing3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["left_ring_finger3", "left_ring_finger4"],
                                             "roll_reference": "l_ring3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]
@@ -163,21 +163,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["left_thumb_third_joint", "left_thumb2"],
                                     "roll_reference": "l_thumb1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:LeftHandThumb2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["left_thumb2", "left_thumb3"],
                                         "roll_reference": "l_thumb2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:LeftHandThumb3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["left_thumb3", "left_thumb4"],
                                             "roll_reference": "l_thumb3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]
@@ -242,21 +242,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["right_forefinger_third_joint", "right_forefinger2"],
                                     "roll_reference": "r_index1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:RightHandIndex2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["right_forefinger2", "right_forefinger3"],
                                         "roll_reference": "r_index2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:RightHandIndex3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["right_forefinger3", "right_forefinger4"],
                                             "roll_reference": "r_index3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]
@@ -268,21 +268,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["right_middle_finger_third_joint", "right_middle_finger2"],
                                     "roll_reference": "r_middle1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:RightHandMiddle2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["right_middle_finger2", "right_middle_finger3"],
                                         "roll_reference": "r_middle2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:RightHandMiddle3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["right_middle_finger3", "right_middle_finger4"],
                                             "roll_reference": "r_middle3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]
@@ -294,21 +294,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["right_pinky_finger_third_joint", "right_pinky_finger2"],
                                     "roll_reference": "r_pinky1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:RightHandPinky2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["right_pinky_finger2", "right_pinky_finger3"],
                                         "roll_reference": "r_pinky2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:RightHandPinky3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["right_pinky_finger3", "right_pinky_finger4"],
                                             "roll_reference": "r_pinky3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]
@@ -320,21 +320,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["right_ring_finger_third_joint", "right_ring_finger2"],
                                     "roll_reference": "r_ring1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:RightHandRing2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["right_ring_finger2", "right_ring_finger3"],
                                         "roll_reference": "r_ring2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:RightHandRing3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["right_ring_finger3", "right_ring_finger4"],
                                             "roll_reference": "r_ring3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]
@@ -346,21 +346,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["right_thumb_third_joint", "right_thumb2"],
                                     "roll_reference": "r_thumb1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "mixamorig:RightHandThumb2",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["right_thumb2", "right_thumb3"],
                                         "roll_reference": "r_thumb2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "mixamorig:RightHandThumb3",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["right_thumb3", "right_thumb4"],
                                             "roll_reference": "r_thumb3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": []
                                           }
                                         ]

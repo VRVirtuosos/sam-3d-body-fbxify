@@ -23,7 +23,7 @@
                 "name": "Neck",
                 "method": "keypoint_with_global_rot_roll",
                 "point_reference": ["chest", "neck"],
-                "roll_reference": "c_spine2",
+                "roll_reference": "c_neck",
                 "roll_additional_from_reference": -90,
                 "children": [
                   {
@@ -51,56 +51,56 @@
                 "method": "keypoint_with_global_rot_roll",
                 "point_reference": ["chest", "left_shoulder"],
                 "roll_reference": "l_clavicle",
-                "roll_additional_from_reference": -90,
+                "roll_additional_from_reference": 0,
                 "children": [
                   {
                     "name": "LeftUpperArm",
                     "method": "keypoint_with_global_rot_roll",
                     "point_reference": ["left_shoulder", "left_elbow"],
                     "roll_reference": "l_uparm",
-                    "roll_additional_from_reference": 90,
+                    "roll_additional_from_reference": 0,
                     "children": [
                       {
                         "name": "LeftLowerArm",
                         "method": "keypoint_with_global_rot_roll",
                         "point_reference": ["left_elbow", "left_wrist"],
                         "roll_reference": "l_lowarm",
-                        "roll_additional_from_reference": 90,
+                        "roll_additional_from_reference": 0,
                         "children": [
                           {
                             "name": "LeftWrist",
                             "method": "keypoint_with_global_rot_roll",
                             "point_reference": ["left_wrist", "left_hand"],
                             "roll_reference": "l_wrist",
-                            "roll_additional_from_reference": 0,
+                            "roll_additional_from_reference": -90,
                             "children": [
                               {
                                 "name": "LeftHand",
                                 "method": "keypoint_with_global_rot_roll",
                                 "point_reference": ["left_wrist", "left_middle_finger_third_joint"],
                                 "roll_reference": "l_wrist",
-                                "roll_additional_from_reference": 0,
+                                "roll_additional_from_reference": -90,
                                 "children": [
                                   {
                                     "name": "LeftThumbProximal",
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["left_thumb_third_joint", "left_thumb2"],
                                     "roll_reference": "l_thumb1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "LeftThumbIntermediate",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["left_thumb2", "left_thumb3"],
                                         "roll_reference": "l_thumb2",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "LeftThumbDistal",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["left_thumb3", "left_thumb4"],
                                             "roll_reference": "l_thumb3",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": [
                                               {
                                                 "name": "LeftThumbDistal_end",
@@ -306,21 +306,21 @@
                                     "method": "keypoint_with_global_rot_roll",
                                     "point_reference": ["right_thumb_third_joint", "right_thumb2"],
                                     "roll_reference": "r_thumb1",
-                                    "roll_additional_from_reference": 0,
+                                    "roll_additional_from_reference": -90,
                                     "children": [
                                       {
                                         "name": "RightThumbIntermediate",
                                         "method": "keypoint_with_global_rot_roll",
                                         "point_reference": ["right_thumb2", "right_thumb3"],
                                         "roll_reference": "r_thumb1",
-                                        "roll_additional_from_reference": 0,
+                                        "roll_additional_from_reference": -90,
                                         "children": [
                                           {
                                             "name": "RightThumbDistal",
                                             "method": "keypoint_with_global_rot_roll",
                                             "point_reference": ["right_thumb3", "right_thumb4"],
                                             "roll_reference": "r_thumb2",
-                                            "roll_additional_from_reference": 0,
+                                            "roll_additional_from_reference": -90,
                                             "children": [
                                               {
                                                 "name": "RightThumbDistal_end",

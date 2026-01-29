@@ -11,15 +11,23 @@ import torch
 import numpy as np
 from sam_3d_body import load_sam_3d_body, SAM3DBodyEstimator
 from sam_3d_body.data.utils.io import load_image
-from fbxify.utils import to_serializable
+from fbxify.utils import to_serializable, extract_fbx_faces_with_blender
 from fbxify import VERSION
 from fbxify.i18n import Translator, DEFAULT_LANGUAGE
 import json
 import os
+import glob
+import re
 import random
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
+import threading
+
+
+class CancelledError(Exception):
+    """Raised when a running pose estimation job is cancelled."""
+    pass
 
 
 class PoseEstimationManager:
@@ -30,7 +38,17 @@ class PoseEstimationManager:
     
     cached_cam_int = None  # cache for camera intrinsics to avoid re-running FOV estimator per frame
     
-    def __init__(self, checkpoint_path, mhr_path, device=None, detector_name=None, detector_path=None, fov_name="moge2", fov_path=None):
+    def __init__(
+        self,
+        checkpoint_path,
+        mhr_path,
+        device=None,
+        detector_name=None,
+        detector_path=None,
+        fov_name="moge2",
+        fov_path=None,
+        precision="fp32",
+    ):
         """
         Initialize the pose estimation manager.
         
@@ -51,6 +69,8 @@ class PoseEstimationManager:
             device=self.device,
             mhr_path=mhr_path
         )
+
+        self.cfg = cfg
         
         # Initialize human detector if requested
         human_detector = None
@@ -83,7 +103,72 @@ class PoseEstimationManager:
             human_segmentor=None,
             fov_estimator=fov_estimator,
         )
-        self.faces = self.estimator.faces
+
+        self.precision = "fp32"
+        self.set_inference_options(precision=precision)
+        self._cancel_event = threading.Event()
+        self._lod_faces_cache: Dict[int, np.ndarray] = {}
+        self._lod_faces_initialized = False
+
+    def _extract_faces_from_fbx(self, fbx_path: str) -> Optional[np.ndarray]:
+        return extract_fbx_faces_with_blender(fbx_path)
+
+    def _load_faces_from_file(self, lod: int) -> Optional[np.ndarray]:
+        base_dir = os.path.dirname(__file__)
+        faces_path = os.path.join(base_dir, "mapping", "mhr", f"lod{lod}_faces.npy")
+        if not os.path.exists(faces_path):
+            return None
+        data = np.load(faces_path, allow_pickle=False)
+        if isinstance(data, np.ndarray):
+            return data
+        if hasattr(data, "files") and data.files:
+            key = "faces" if "faces" in data.files else data.files[0]
+            return data[key]
+        return None
+
+    def _ensure_lod_faces_files(self) -> None:
+        if self._lod_faces_initialized:
+            return
+        self._lod_faces_initialized = True
+        
+        base_dir = os.path.dirname(__file__)
+        assets_dir = os.path.join(base_dir, "mapping", "mhr")
+        if not os.path.isdir(assets_dir):
+            print(f"  LOD faces: assets dir not found: {assets_dir}")
+            return
+        fbx_paths = sorted(glob.glob(os.path.join(assets_dir, "lod*.fbx")))
+        if not fbx_paths:
+            print(f"  LOD faces: no FBX files in {assets_dir}")
+            return
+        out_dir = os.path.join(os.path.dirname(__file__), "mapping", "mhr")
+        os.makedirs(out_dir, exist_ok=True)
+        for fbx_path in fbx_paths:
+            base = os.path.basename(fbx_path)
+            match = re.match(r"lod(\d+)\.fbx$", base, re.IGNORECASE)
+            if not match:
+                continue
+            lod = int(match.group(1))
+            out_path = os.path.join(out_dir, f"lod{lod}_faces.npy")
+            if os.path.exists(out_path):
+                continue
+            faces = self._extract_faces_from_fbx(fbx_path)
+            if faces is None or faces.size == 0:
+                print(f"  LOD faces: failed to extract faces from {fbx_path}")
+                continue
+            np.save(out_path, faces.astype(np.int64))
+            print(f"  LOD faces: saved {out_path} shape={faces.shape}")
+
+    def cancel_current_job(self) -> None:
+        """Signal any running estimation loop to stop."""
+        self._cancel_event.set()
+
+    def clear_cancel(self) -> None:
+        """Clear the cancel signal before starting a new job."""
+        self._cancel_event.clear()
+
+    def _check_cancelled(self) -> None:
+        if self._cancel_event.is_set():
+            raise CancelledError("Pose estimation cancelled by user.")
     
     def cache_cam_int_from_images(self, img_paths, average_of=1):
         """
@@ -115,6 +200,33 @@ class PoseEstimationManager:
         cam_ints_stacked = torch.stack(cam_ints, dim=0)  # (N, 1, 3, 3)
         self.cached_cam_int = torch.mean(cam_ints_stacked, dim=0)  # (1, 3, 3)
         print(f"Cached camera intrinsics (averaged of {average_of} images): {self.cached_cam_int}")
+
+    def set_inference_options(self, precision: str = "fp32"):
+        """
+        Configure inference precision.
+        """
+        precision = (precision or "fp32").lower()
+        if precision not in ["fp32", "bf16", "fp16"]:
+            raise ValueError(f"Unsupported precision: {precision}")
+
+        if precision != self.precision:
+            self._apply_precision(precision)
+            self.precision = precision
+
+    def _apply_precision(self, precision: str):
+        model = self.estimator.model
+        if precision == "fp32":
+            model.float()
+            model.backbone_dtype = torch.float32
+            return
+
+        model.cfg.defrost()
+        model.cfg.TRAIN.FP16_TYPE = "bfloat16" if precision == "bf16" else "float16"
+        model.cfg.freeze()
+
+        model.convert_to_fp16()
+        model.backbone_dtype = torch.bfloat16 if precision == "bf16" else torch.float16
+
 
     def cache_cam_int_from_file(self, cam_int):
         """
@@ -291,7 +403,8 @@ class PoseEstimationManager:
         estimation_results = {}
         translator = Translator(lang)
                 
-        for frame_index, frame_path in enumerate(frame_paths):            
+        for frame_index, frame_path in enumerate(frame_paths):
+            self._check_cancelled()
             # Update progress bar if callback is provided
             if progress_callback:
                 progress = frame_index / len(frame_paths)
@@ -363,12 +476,11 @@ class PoseEstimationManager:
             else:
                 raise ValueError(f"bboxes must be either a list or numpy array, got {type(bboxes)}")
 
-        # IMPORTANT: process_one_image returns a list of dicts, in ORDER of bboxes passed in!
-        timer_start = time.time()
+        # Reset lod to 1 for estimator - the model can be swapped if fbx generation chooses a different lod
+        self.estimator.model.head_pose.lod = 1
+        self.estimator.model.head_pose_hand.lod = 1
+        # IMPORTANT: process_one_image returns a list of dicts
         outputs_raw = self.estimator.process_one_image(image_path, bboxes=bboxes_numpy, cam_int=self.cached_cam_int)
-        timer_process = time.time()
-        process_time = timer_process - timer_start
-        # Note: Detailed breakdown is printed inside process_one_image
         
         # Check if mesh was generated (pred_vertices present)
         mesh_generated = False
@@ -376,7 +488,7 @@ class PoseEstimationManager:
             mesh_generated = "pred_vertices" in outputs_raw[0] and outputs_raw[0]["pred_vertices"] is not None
             if mesh_generated:
                 vert_count = len(outputs_raw[0]["pred_vertices"]) if outputs_raw[0]["pred_vertices"] is not None else 0
-                print(f"  [INFO] Mesh generated: {vert_count} vertices (may not be needed)")
+                print(f"  [INFO] Mesh generated: {vert_count} vertices")
 
         # Convert outputs to serializable format and organize by person ID
         timer_filter_start = time.time()
@@ -655,7 +767,7 @@ class PoseEstimationManager:
         
         # Get MHR head from estimator
         mhr_head = self.estimator.model.head_pose
-        faces = self.faces
+        self._ensure_lod_faces_files()
         
         # Convert numpy arrays to torch tensors
         device = self.device
@@ -700,6 +812,7 @@ class PoseEstimationManager:
         print(f"  Global rot: {global_rot.shape} (all zeros)")
         print(f"  Body pose: {body_pose_params.shape} (all zeros)")
         print(f"  Hand pose: None (using zeros from body_pose_params for straight fingers)")
+        print(f"  LOD: {lod}")
         
         # Call mhr_forward to generate T-pose vertices
         with torch.no_grad():
@@ -729,9 +842,17 @@ class PoseEstimationManager:
             torch.cuda.empty_cache()
         
         print(f"Generated {len(vertices_np)} vertices in T-pose")
-        
+
+        # Prefer cached per-LOD faces if present; fallback to checkpoint faces.
+        faces_default = mhr_head.faces.cpu().numpy()
+        faces_file = self._load_faces_from_file(lod) if lod is not None else None
+        faces_to_use = faces_file if faces_file is not None and faces_file.size > 0 else faces_default
+
         # Create trimesh and save as OBJ
-        mesh = trimesh.Trimesh(vertices=vertices_np, faces=faces)
+        print(f"  Faces: {len(faces_to_use)}")
+        print(f"  vertices: {len(vertices_np)}")
+        mesh = trimesh.Trimesh(vertices=vertices_np, faces=faces_to_use)
+        print(f"  mesh: {mesh.vertices.shape}")
         mesh.export(output_obj_path)
         print(f"Saved T-pose mesh to {output_obj_path}")
         

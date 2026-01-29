@@ -119,6 +119,15 @@ def parse_args():
         default=1,
         help="Number of images to sample for FOV estimation (default: 1, used if --fov_method is Sample)"
     )
+
+    # Precision and hand crop scale
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="fp32",
+        choices=["fp32", "bf16", "fp16"],
+        help="Inference precision: fp32 (full), bf16 (fast + safer), fp16 (fastest)"
+    )
     
     # Root motion
     parser.add_argument(
@@ -132,6 +141,20 @@ def parse_args():
         action="store_false",
         dest="use_root_motion",
         help="Disable root motion"
+    )
+
+    # Auto-floor
+    parser.add_argument(
+        "--auto_floor",
+        action="store_true",
+        default=True,
+        help="Auto-floor: offset average pred_cam_t.y to 0 (default: True)"
+    )
+    parser.add_argument(
+        "--no_auto_floor",
+        action="store_false",
+        dest="auto_floor",
+        help="Disable auto-floor"
     )
     
     # Estimation JSON options
@@ -208,7 +231,8 @@ def main():
                 detector_name=args.detector_name,
                 detector_path=detector_path,
                 fov_name=args.fov_name,
-                fov_path=fov_path
+                fov_path=fov_path,
+                precision=args.precision
             )
         except Exception as e:
             print(f"Error initializing estimator: {e}")
@@ -224,7 +248,8 @@ def main():
                 detector_name=args.detector_name,
                 detector_path=detector_path,
                 fov_name=args.fov_name,
-                fov_path=fov_path
+                fov_path=fov_path,
+                precision=args.precision
             )
         except Exception as e:
             print(f"Error initializing estimator: {e}")
@@ -243,7 +268,8 @@ def main():
                 args.load_estimation_json,
                 args.profile,
                 args.use_root_motion,
-                fps=30.0
+                fps=30.0,
+                auto_floor=args.auto_floor
             )
             
             # Export FBX files
@@ -254,7 +280,8 @@ def main():
                 process_result.root_motions,
                 process_result.frame_paths,
                 process_result.fps,
-                progress_callback=lambda p, d: print(f"Progress: {p*100:.1f}% - {d}")
+                progress_callback=lambda p, d: print(f"Progress: {p*100:.1f}% - {d}"),
+                height_offset=process_result.height_offset
             )
             
             # Move files to output directory if specified
@@ -352,7 +379,8 @@ def main():
             process_result.root_motions,
             process_result.frame_paths,
             process_result.fps,
-            progress_callback
+            progress_callback,
+            height_offset=getattr(process_result, "height_offset", 0.0)
         )
         
         # Move files to output directory if specified

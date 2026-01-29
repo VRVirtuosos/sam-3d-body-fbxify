@@ -11,10 +11,10 @@ import json
 import os
 import numpy as np
 from typing import Dict, List, Optional, Any
-from fbxify.utils import convert_to_blender_coords, get_keypoint, get_profile, add_helper_keypoints
+from fbxify.utils import convert_camera_space_to_armature_space, convert_camera_space_to_armature_space_array, get_keypoint, get_profile, add_helper_keypoints, parse_extrinsics_file, build_frame_extrinsics
 from fbxify.metadata import JOINT_NAMES_TO_INDEX
 from fbxify import VERSION
-
+from mathutils import Vector, Matrix
 
 class FbxDataPrepManager:
     """
@@ -211,10 +211,23 @@ class FbxDataPrepManager:
                     if (estimation_data.get("global_rot") is not None and 
                         estimation_data.get("pred_cam_t") is not None):
                         root_motion = root_motions[person_id]
-                        root_motion.append({
+                        root_entry = {
+                            "frame_index": frame_index,  # 0-based frame index to match joint_mapping
                             "global_rot": estimation_data["global_rot"],
                             "pred_cam_t": estimation_data["pred_cam_t"],
-                        })
+                        }
+
+                        # Optional extrinsics metadata for Blender root motion
+                        if estimation_data.get("extrinsics_R_cw") is not None:
+                            root_entry["extrinsics_R_cw"] = estimation_data["extrinsics_R_cw"]
+                        if estimation_data.get("extrinsics_T_cw") is not None:
+                            root_entry["extrinsics_T_cw"] = estimation_data["extrinsics_T_cw"]
+                        if estimation_data.get("extrinsics_base_cam") is not None:
+                            root_entry["extrinsics_base_cam"] = estimation_data["extrinsics_base_cam"]
+                        if estimation_data.get("extrinsics_root_cam") is not None:
+                            root_entry["extrinsics_root_cam"] = estimation_data["extrinsics_root_cam"]
+
+                        root_motion.append(root_entry)
         
         return {
             "joint_to_bone_mappings": joint_to_bone_mappings,
@@ -316,7 +329,7 @@ class FbxDataPrepManager:
             return  # no to keypoint data, so no data to populate
 
         dir_vector = to_keypoint_data - from_keypoint_data
-        dir_vector = convert_to_blender_coords(dir_vector)
+        # dir_vector = convert_to_blender_coords(dir_vector)
 
         data = bone["data"]
 
@@ -392,7 +405,9 @@ class FbxDataPrepManager:
 
         return armature_rest_pose
 
-    def create_metadata(self, profile_name, id, num_keyframes=1, fps=30.0):
+    def create_metadata(self, profile_name, id, num_keyframes=1, fps=30.0, height_offset: float = 0.0,
+                        extrinsics_sample_rate: int = 0, extrinsics_scale: float = 0.0,
+                        extrinsics_invert_quaternion: bool = False, extrinsics_invert_translation: bool = False):
         """
         Create metadata for FBX export.
         
@@ -401,6 +416,7 @@ class FbxDataPrepManager:
             id: Person ID
             num_keyframes: Number of keyframes
             fps: Frames per second
+            height_offset: Offset to apply to pred_cam_t.y when setting armature location
             
         Returns:
             Metadata dictionary
@@ -409,6 +425,169 @@ class FbxDataPrepManager:
             "num_keyframes": num_keyframes,
             "id": id,
             "profile_name": profile_name,
-            "fps": fps
+            "fps": fps,
+            "height_offset": height_offset,
+            "extrinsics_sample_rate": extrinsics_sample_rate,
+            "extrinsics_scale": extrinsics_scale,
+            "extrinsics_invert_quaternion": extrinsics_invert_quaternion,
+            "extrinsics_invert_translation": extrinsics_invert_translation
         }
 
+    def convert_camera_space_to_armature_space(self, estimation_results: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """ Convert camera space to armature space
+        # The fbx given to us has Y up, Z forward, X right
+        # SAM3D outputs are camera based with Y down, Z backward, X right
+        # Blender has Z up, Y forward, X right
+        # Therefore, we perform two axis‑convention conversions: 
+        # 1. external camera/joint space → armature/extrinsic space, (used in fbx_data_prep_manager.py)
+        # 2. armature/extrinsic space → Blender space. (used in blender_utils/build_armature_and_pose.py)
+        """
+        for _, frame_data in estimation_results.items():
+            for _, estimation_data in frame_data.items():
+                # Pred joint coords and keypoints have [[x, y, z], [x, y, z], ...] per bone
+                joint_coords_cam = np.array(estimation_data["pred_joint_coords"]) if estimation_data.get("pred_joint_coords") is not None else None
+                pred_keypoints_3d_cam = np.array(estimation_data["pred_keypoints_3d"]) if estimation_data.get("pred_keypoints_3d") is not None else None
+                pred_cam_t_cam = np.array(estimation_data["pred_cam_t"]) if estimation_data.get("pred_cam_t") is not None else None
+
+                joint_coords_arm = convert_camera_space_to_armature_space_array(joint_coords_cam)
+                pred_keypoints_3d_arm = convert_camera_space_to_armature_space_array(pred_keypoints_3d_cam)
+                pred_cam_t_arm = convert_camera_space_to_armature_space(pred_cam_t_cam)
+
+                estimation_data["pred_joint_coords"] = joint_coords_arm.tolist()
+                estimation_data["pred_keypoints_3d"] = pred_keypoints_3d_arm.tolist()
+                estimation_data["pred_cam_t"] = pred_cam_t_arm.tolist()
+        return estimation_results
+
+    def apply_extrinsics_to_estimation(
+        self,
+        estimation_results: Dict[str, Dict[str, Any]],
+        extrinsics_file: str,
+        sample_rate: int = 0,
+        extrinsics_scale: float = 0.0,
+        invert_quaternion: bool = False,
+        invert_translation: bool = False,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Apply camera extrinsics to estimation data (camera -> world)."""
+        if not extrinsics_file or not os.path.exists(extrinsics_file):
+            print("Extrinsics file not found; skipping extrinsics application.")
+            return estimation_results
+
+        entries = parse_extrinsics_file(extrinsics_file, extrinsics_scale)
+        if not entries:
+            print("No extrinsics entries parsed; skipping extrinsics application.")
+            return estimation_results
+
+        try:
+            frame_indices = [int(k) for k in estimation_results.keys()]
+            frame_count = max(frame_indices) + 1 if frame_indices else 0
+        except ValueError:
+            frame_count = len(estimation_results)
+        frame_extrinsics = build_frame_extrinsics(
+            frame_count,
+            sample_rate,
+            entries,
+            invert_quaternion=invert_quaternion,
+            invert_translation=invert_translation,
+        )
+        if not frame_extrinsics:
+            print("Extrinsics frame build returned empty; skipping.")
+            return estimation_results
+
+        for frame_index_str, frame_data in estimation_results.items():
+            if not frame_data:
+                continue
+            try:
+                frame_index = int(frame_index_str)
+            except ValueError:
+                continue
+            if frame_index < 0 or frame_index >= len(frame_extrinsics):
+                continue
+
+            self._apply_extrinsics_to_frame(frame_data, frame_extrinsics[frame_index], frame_index)
+        
+        return estimation_results
+
+    def _apply_extrinsics_to_frame(self, frame_data: Dict[str, Any], frame_extrinsics: Dict[str, Any], frame_idx: int):
+        if not frame_extrinsics or not isinstance(frame_extrinsics, dict):
+            return
+        if frame_extrinsics.get("R_wc") is None or frame_extrinsics.get("T_wc") is None:
+            return
+
+        R_wc = np.array(frame_extrinsics["R_wc"], dtype=np.float64)
+        T_wc = np.array(frame_extrinsics["T_wc"], dtype=np.float64)
+
+        for _, estimation_data in frame_data.items():
+            self._apply_extrinsics_to_person(estimation_data, R_wc, T_wc, frame_idx)
+
+    def _apply_extrinsics_to_person(self, estimation_data: Dict[str, Any], R_wc: np.ndarray, T_wc: np.ndarray, frame_idx: int):
+        if not estimation_data or not isinstance(estimation_data, dict):
+            return
+        if estimation_data.get("pred_joint_coords") is None:
+            return
+
+        joint_coords_base_cam = np.array(estimation_data.get("pred_joint_coords"))
+        keypoints_cam = np.array(estimation_data.get("pred_keypoints_3d")) if estimation_data.get("pred_keypoints_3d") is not None else None
+        joint_rots_cam = np.array(estimation_data.get("pred_global_rots")) if estimation_data.get("pred_global_rots") is not None else None
+        global_rot_cam = np.array(estimation_data.get("global_rot")) if estimation_data.get("global_rot") is not None else None
+        base_cam = estimation_data.get("pred_cam_t")
+
+        root_idx = JOINT_NAMES_TO_INDEX.get("root", 1)
+
+        root_joint_offset = joint_coords_base_cam[root_idx]
+        base_world = self._apply_extrinsics_to_base(base_cam, root_joint_offset, T_wc, frame_idx)
+
+        joint_coords_base_world = self._apply_extrinsics_to_body_points(joint_coords_base_cam, base_cam, base_world, T_wc, frame_idx)
+
+        keypoints_world = self._apply_extrinsics_to_body_points(keypoints_cam, base_cam, base_world, T_wc, frame_idx)
+        joint_rots_world = self._apply_extrinsics_to_rotations(joint_rots_cam, R_wc, frame_idx)
+        global_rot_world = self._apply_extrinsics_to_rotation(global_rot_cam, R_wc, frame_idx)
+
+        # Apply extrinsics to all data calculated above
+        estimation_data["pred_joint_coords"] = joint_coords_base_world.tolist()
+        estimation_data["pred_keypoints_3d"] = keypoints_world.tolist()
+        estimation_data["pred_global_rots"] = joint_rots_world.tolist()
+        estimation_data["global_rot"] = global_rot_world.tolist()
+        estimation_data["pred_cam_t"] = base_world.tolist()
+
+    def _apply_extrinsics_to_rotations(self, R_cams: np.ndarray, R_wc: np.ndarray, frame_idx: int):
+        R_worlds = []
+        for R_cam in R_cams:
+            R_worlds.append(self._apply_extrinsics_to_rotation(R_cam, R_wc, frame_idx))
+        return np.array(R_worlds)
+
+    def _apply_extrinsics_to_rotation(self, R_cam: Matrix, R_wc: Matrix, frame_idx: int):
+        return np.array(R_wc @ R_cam)
+
+    def _apply_extrinsics_to_body_points(self, joint_coords_base_cam: np.ndarray, base_cam: np.ndarray, base_world: np.ndarray, T_wc: Matrix, frame_idx: int):
+        """
+        Joint coords are in armature base space. Offset by base_camera space to get joint_coords_cam
+        Then, apply extrinsics 4x4 translation matrix to get joint_coords_world
+        Finally, offset by base_world to get joint_coords_base_world, which is the new pred_joint_coords
+        """
+        joint_coords_base_world = []
+        for i, joint_coord_base_cam in enumerate(joint_coords_base_cam):
+            joint_coord_cam = joint_coord_base_cam - base_cam
+
+            # convert to homogeneous coordinates
+            joint_coord_cam = np.append(joint_coord_cam, 1.0)
+            joint_coord_world = (T_wc @ joint_coord_cam)[:3]
+            joint_coords_base_world.append(joint_coord_world + base_world)
+
+        return np.array(joint_coords_base_world)
+
+    def _apply_extrinsics_to_base(self, translation: np.ndarray, root_joint_offset: np.ndarray,
+            T_wc: np.ndarray, frame_idx: int):
+
+        # pivot around the root joint (in camera space)
+        offset_location = np.asarray(translation, dtype=np.float64) + np.asarray(root_joint_offset, dtype=np.float64)
+
+        # convert to homogeneous coordinates (why is this required here but not in blender? wtf?)
+        offset_location = np.append(offset_location, 1.0)
+
+        # camera -> world
+        world = (T_wc @ offset_location)[:3]
+
+        # undo pivot
+        world = world - np.asarray(root_joint_offset, dtype=np.float64)
+
+        return world

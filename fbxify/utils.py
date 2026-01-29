@@ -1,4 +1,6 @@
+from __future__ import annotations
 import numpy as np
+import cv2
 import tempfile
 import os
 import json
@@ -7,6 +9,15 @@ import time
 import shutil
 import re
 from tqdm import tqdm
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except Exception:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 from fbxify.metadata import PROFILES, MHR_KEYPOINT_INDEX
 from fbxify.i18n import Translator, DEFAULT_LANGUAGE
@@ -24,6 +35,8 @@ MHR_EXTENDED_KEYPOINT_INDEX = {
     "left_shoulder_root": 78,
     "right_shoulder_root": 79,
 }
+
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg"}
 
 def get_profile(profile_name):
     return PROFILES[profile_name]
@@ -55,7 +68,61 @@ def to_serializable(obj, _seen=None):
     return obj
 
 
-def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_obj_path=None, lod_fbx_path=None, 
+def _run_blender_script(cmd_args, cwd):
+    process = subprocess.Popen(
+        cmd_args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+        bufsize=1,
+        cwd=cwd,
+    )
+    try:
+        for line in process.stdout:
+            print(line, end='', flush=True)
+        return_code = process.wait()
+        if return_code != 0:
+            raise subprocess.CalledProcessError(return_code, cmd_args)
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+        raise
+
+
+def build_camera_extrinsics_json(
+    frame_count: int,
+    extrinsics_file: Optional[str],
+    sample_rate: int,
+    extrinsics_scale: float,
+    invert_quaternion: bool,
+    invert_translation: bool,
+    out_path: str,
+) -> Optional[str]:
+    if not extrinsics_file or not os.path.exists(extrinsics_file):
+        return None
+    entries = parse_extrinsics_file(extrinsics_file, extrinsics_scale)
+    if not entries:
+        return None
+    frame_extrinsics = build_frame_extrinsics(
+        frame_count,
+        sample_rate,
+        entries,
+        invert_quaternion=invert_quaternion,
+        invert_translation=invert_translation,
+    )
+    if not frame_extrinsics:
+        return None
+    payload = {
+        "frame_extrinsics": [
+            {"T_wc": frame_entry["T_wc"]} for frame_entry in frame_extrinsics
+        ]
+    }
+    with open(out_path, "w") as f:
+        json.dump(to_serializable(payload), f)
+    return out_path
+
+
+def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, mesh_obj_path=None, lod_fbx_path=None, 
                   progress_callback=None, lang=DEFAULT_LANGUAGE):
     tmp_dir = tempfile.mkdtemp(prefix="sam3d_fbx_")
     
@@ -64,7 +131,6 @@ def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_o
         joint_mapping_path = os.path.join(tmp_dir, "armature_joint_mapping.json")
         root_motion_path = os.path.join(tmp_dir, "root_motion.json")
         rest_pose_path = os.path.join(tmp_dir, "armature_rest_pose.json")
-        faces_path = os.path.join(tmp_dir, "faces.json")
         script_path = os.path.join(tmp_dir, "blender_script.py")
         fbx_path = os.path.join(tmp_dir, "output.fbx")
         
@@ -76,8 +142,6 @@ def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_o
             json.dump({"root_motion": to_serializable(root_motion)}, f)
         with open(rest_pose_path, "w") as f:
             json.dump({"rest_pose": rest_pose}, f)
-        with open(faces_path, "w") as f:
-            json.dump({"faces": faces.tolist()}, f)
 
         # Copy mesh files if provided
         lod_fbx_path_tmp = None
@@ -103,7 +167,7 @@ def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_o
             "blender", "-b",
             "--python", script_path,
             "--",
-            metadata_path, joint_mapping_path, root_motion_path, rest_pose_path, faces_path, fbx_path
+            metadata_path, joint_mapping_path, root_motion_path, rest_pose_path, fbx_path
         ]
         
         # Add mesh paths if provided (at least one must be provided for mesh inclusion)
@@ -197,12 +261,312 @@ def export_to_fbx(metadata, joint_mapping, root_motion, rest_pose, faces, mesh_o
             pass
 
 
-def convert_to_blender_coords(vec):
-    """SAM3D座標系 → Blender座標系"""
+def export_camera_scene(
+    metadata: Dict,
+    camera_scene_path: Optional[str],
+    camera_zoom: float,
+    extrinsics_file: Optional[str],
+    progress_callback=None,
+) -> Optional[str]:
+    tmp_dir = tempfile.mkdtemp(prefix="sam3d_cam_")
+    try:
+        metadata_path = os.path.join(tmp_dir, "metadata.json")
+        output_blend_tmp_path = os.path.join(tmp_dir, "camera_scene.blend")
+        camera_script_path = os.path.join(tmp_dir, "build_camera.py")
+        camera_extrinsics_path = os.path.join(tmp_dir, "camera_extrinsics.json")
+        camera_media_path = camera_scene_path
+        media_is_video = bool(camera_scene_path and _is_video_path(camera_scene_path))
+
+        if media_is_video:
+            placeholder_path = os.path.join(tmp_dir, "camera_placeholder.png")
+            if progress_callback:
+                progress_callback(0.9, "Preparing camera scene placeholder")
+            _create_camera_placeholder_image(
+                placeholder_path,
+                overlay_text=_get_camera_placeholder_overlay_text(),
+            )
+            camera_media_path = placeholder_path
+            if not metadata.get("fps"):
+                metadata["fps"] = 30.0
+            if not metadata.get("num_keyframes"):
+                metadata["num_keyframes"] = 1
+
+        with open(metadata_path, "w") as f:
+            json.dump({"metadata": metadata}, f)
+
+        camera_script_source = os.path.join(os.path.dirname(__file__), "blender_utils", "build_camera.py")
+        if os.path.exists(camera_script_source):
+            shutil.copyfile(camera_script_source, camera_script_path)
+
+        extrinsics_sample_rate = int(metadata.get("extrinsics_sample_rate", 0))
+        extrinsics_scale = float(metadata.get("extrinsics_scale", 0.0))
+        extrinsics_invert_quaternion = bool(metadata.get("extrinsics_invert_quaternion", False))
+        extrinsics_invert_translation = bool(metadata.get("extrinsics_invert_translation", False))
+
+        camera_extrinsics_json = build_camera_extrinsics_json(
+            metadata.get("num_keyframes", 0),
+            extrinsics_file,
+            extrinsics_sample_rate,
+            extrinsics_scale,
+            extrinsics_invert_quaternion,
+            extrinsics_invert_translation,
+            camera_extrinsics_path,
+        )
+
+        camera_cmd = [
+            "blender", "-b",
+            "--factory-startup",
+            "--python", camera_script_path,
+            "--",
+            output_blend_tmp_path,
+            metadata_path,
+            camera_media_path or "",
+            str(camera_zoom if camera_zoom is not None else 0.0),
+            camera_extrinsics_json or "",
+            "1" if media_is_video else "0",
+        ]
+        _run_blender_script(camera_cmd, tmp_dir)
+
+        profile_name = metadata.get("profile_name", "unknown")
+        timestamp = int(time.time())
+        final_dir = tempfile.gettempdir()
+        final_path = os.path.join(
+            final_dir, f"{profile_name}_{timestamp:010d}_camera_scene.blend"
+        )
+        shutil.copyfile(output_blend_tmp_path, final_path)
+        return final_path
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def _get_camera_placeholder_overlay_text() -> str:
+    return (
+        "Blender does not currently support video packing.\n"
+        "You'll need to re-attach the reference:\n"
+        "1. Go to Shading\n"
+        "2. In the image texture, delete the reference\n"
+        "3. select \"Open\", choose your video\n"
+        "4. Select your uploaded video\n"
+        "5. Set the frame duration and \"Use Auto Refresh\"\n"
+    )
+
+
+def _create_camera_placeholder_image(
+    output_path: str,
+    width: int = 1920,
+    height: int = 1080,
+    overlay_text: Optional[str] = None,
+) -> None:
+    width = int(width) if width else 1920
+    height = int(height) if height else 1080
+    background = (20, 20, 20)
+    text_color = (240, 240, 240)
+
+    if Image is not None and ImageDraw is not None and ImageFont is not None:
+        img = Image.new("RGB", (width, height), color=background)
+        if overlay_text:
+            draw = ImageDraw.Draw(img)
+            font = None
+            try:
+                font = ImageFont.truetype("DejaVuSans.ttf", size=70)
+            except Exception:
+                font = ImageFont.load_default()
+            margin = 40
+            try:
+                line_height = int(font.getbbox("Ag")[3] - font.getbbox("Ag")[1]) + 6
+            except Exception:
+                line_height = 90
+            y = margin
+            for line in overlay_text.splitlines():
+                draw.text((margin, y), line, fill=text_color, font=font)
+                y += line_height
+        img.save(output_path)
+        return
+
+    img_array = np.zeros((height, width, 3), dtype=np.uint8)
+    img_array[:, :] = background
+    cv2.imwrite(output_path, img_array)
+
+def _is_video_path(path: str) -> bool:
+    ext = os.path.splitext(path)[1].lower()
+    return ext in VIDEO_EXTENSIONS
+
+
+def _extract_video_frames(
+    video_path: str,
+    output_dir: str,
+    jpg_quality: int = 85,
+    progress_callback=None,
+    progress_start: float = 0.9,
+    progress_end: float = 0.99,
+) -> tuple[list[str], float]:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Unable to open video: {video_path}")
+    frame_paths = []
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0 or fps is None:
+        fps = 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    progress_span = max(float(progress_end) - float(progress_start), 0.0)
+    progress_bar = None
+    if progress_callback is None:
+        progress_bar = tqdm(
+            total=total_frames if total_frames > 0 else None,
+            desc="Extracting video frames",
+            unit="frame",
+        )
+    frame_idx = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_path = os.path.join(output_dir, f"frame_{frame_idx:06d}.jpg")
+        cv2.imwrite(frame_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(jpg_quality)])
+        frame_paths.append(frame_path)
+        frame_idx += 1
+        if progress_bar:
+            progress_bar.update(1)
+        if progress_callback:
+            if total_frames > 0:
+                normalized = min(frame_idx / total_frames, 1.0)
+            else:
+                normalized = 0.0
+            progress_callback(
+                progress_start + (normalized * progress_span),
+                "Extracting video frames",
+            )
+    cap.release()
+    if progress_bar:
+        progress_bar.close()
+    return frame_paths, fps
+
+def extract_fbx_faces_with_blender(fbx_path: str, out_path: Optional[str] = None) -> Optional[np.ndarray]:
+    """Extract triangle faces from an FBX using Blender in headless mode."""
+    blender_exe = os.environ.get("BLENDER_PATH", "blender")
+    script_source = os.path.join(
+        os.path.dirname(__file__), "blender_utils", "extract_fbx_faces.py"
+    )
+    if not os.path.exists(script_source):
+        print(f"  Warning: Blender faces script not found: {script_source}")
+        return None
+    tmp_dir = tempfile.mkdtemp(prefix="sam3d_faces_")
+    script_path = os.path.join(tmp_dir, "extract_fbx_faces.py")
+    faces_path = out_path or os.path.join(tmp_dir, "faces.npy")
+    try:
+        shutil.copyfile(script_source, script_path)
+        cmd = [
+            blender_exe,
+            "-b",
+            "--python",
+            script_path,
+            "--",
+            fbx_path,
+            faces_path,
+        ]
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1,
+            cwd=tmp_dir,
+        )
+        try:
+            for line in process.stdout:
+                print(line, end="", flush=True)
+            return_code = process.wait()
+            if return_code != 0:
+                raise subprocess.CalledProcessError(return_code, cmd)
+        except Exception:
+            if process.poll() is None:
+                process.kill()
+            raise
+        if not os.path.exists(faces_path):
+            print(f"  Warning: Blender faces output missing for '{fbx_path}'")
+            return None
+        return np.load(faces_path, allow_pickle=False)
+    finally:
+        if out_path is None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+def convert_camera_space_to_armature_space_array(array):
+    """ Convert camera space to armature space for an array of vectors """
+    # Camera space is the space defined by the estimation results
+    # Armature space is the space defined by the armatures provided via sam 3d body
+    # In camera space, X is right, Y is down, Z is forward
+    # In armature space, X is right, Y is up, Z is backward
+    if array is None:
+        return None
+    return np.array([convert_camera_space_to_armature_space(vec) for vec in array])
+
+def convert_camera_space_to_armature_space(vec):
+    """ Convert camera space to armature space, aka the space based on the armatures provided via sam 3d body """
+    # Camera space is the space defined by the estimation results
+    # Armature space is the space defined by the armatures provided via sam 3d body
+    # In camera space, X is right, Y is down, Z is forward
+    # In armature space, X is right, Y is up, Z is backward
+    if vec is None:
+        return None
     x, y, z = vec
-    # To match mixamo, I rotate the armature x=90 later
     return np.array([x, -y, -z])
 
+def convert_armature_space_to_blender_space_array(array):
+    """ Convert armature space to blender space for an array of vectors """
+    # Armature space is the space defined by the armatures provided via sam 3d body
+    # Blender space is the space defined by the blender scene
+    # In armature space, X is right, Y is up, Z is backward
+    # In blender space, X is right, Z is up, Y is forward
+    if array is None:
+        return None
+    return np.array([convert_armature_space_to_blender_space(vec) for vec in array])
+
+def convert_armature_space_to_blender_space(vec):
+    """ Not currently used by fbxify external to blender (which has its own function) but here to track world space conversion """
+    # Armature space is the space defined by the armatures provided via sam 3d body
+    # Blender space is the space defined by the blender scene
+    # In armature space, X is right, Y is up, Z is backward
+    # In blender space, X is right, Z is up, Y is forward
+    if vec is None:
+        return None
+    x, y, z = vec
+    return np.array([x, -z, y])
+
+def convert_colmap_space_to_armature_space_array(array):
+    """ Convert colmap space to armature space for an array of vectors """
+    # Colmap space is the space defined by the colmap camera
+    # Armature space is the space defined by the armatures provided via sam 3d body
+    # In colmap space, X is right, Y is down, Z is forward
+    # In armature space, X is right, Y is up, Z is backward
+    if array is None:
+        return None
+    return np.array([convert_colmap_space_to_armature_space(vec) for vec in array])
+
+def convert_colmap_space_to_armature_space(vec):
+    """ Convert colmap space to armature space, aka the space based on the armatures provided via sam 3d body """
+    # Colmap space is the space defined by the colmap camera
+    # Armature space is the space defined by the armatures provided via sam 3d body
+    # In colmap space, X is right, Y is down, Z is forward
+    # In armature space, X is right, Y is up, Z is backward
+    if vec is None:
+        return None
+    x, y, z = vec
+    return np.array([x, -y, -z])
+
+
+def convert_colmap_rotation_to_armature_space(rot_mat: np.ndarray) -> np.ndarray:
+    """ Convert COLMAP rotation matrix to armature space. """
+    if rot_mat is None:
+        return None
+    rot_mat = np.asarray(rot_mat, dtype=np.float64).reshape(3, 3)
+    axis_flip = np.diag([1.0, -1.0, -1.0])
+    return axis_flip @ rot_mat @ axis_flip
+
+
+def convert_colmap_pose_to_armature_pose(R_cw: np.ndarray, t_cw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Apply COLMAP->armature basis flip to a camera->world pose."""
+    R_cw = convert_colmap_rotation_to_armature_space(R_cw)
+    t_cw = convert_colmap_space_to_armature_space(t_cw)
+    return R_cw, t_cw
 
 def get_keypoint(joints, name):
     """キーポイント名からジョイント位置を取得"""
@@ -454,3 +818,283 @@ def _get_finger_positions(joints_3d, side):
     for prefix in prefixes:
         fingers.extend([kp(f"{prefix}_third_joint"), kp(f"{prefix}2"), kp(f"{prefix}3")])
     return fingers
+
+
+##################################### Extrinsics Utils #####################################
+
+@dataclass
+class ExtrinsicsEntry:
+    frame_index: Optional[int]
+    qvec: np.ndarray  # [qw, qx, qy, qz] (world->camera)
+    tvec: np.ndarray  # [tx, ty, tz] (world->camera)
+
+
+def parse_extrinsics_file(file_path: str, extrinsics_scale: float = 1.0) -> List[ExtrinsicsEntry]:
+    """
+    Parse a COLMAP images.txt-style extrinsics file.
+    
+    Expected lines:
+    IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, IMAGE_NAME
+    Followed by a POINTS2D line (which we skip).
+    
+    Note: IMAGE_ID is treated as a sample index, not an absolute frame index.
+    If values are 1-based, they are normalized to 0-based for interpolation.
+    """
+    entries: List[ExtrinsicsEntry] = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        parts = stripped.split()
+        # Skip POINTS2D lines (usually 2D coordinates in the second line)
+        if len(parts) < 10:
+            continue
+
+        try:
+            frame_index = int(parts[0])
+            qvec = np.array([float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])], dtype=np.float64)
+            tvec = np.array([float(parts[5]), float(parts[6]), float(parts[7])], dtype=np.float64) * extrinsics_scale
+        except (ValueError, IndexError):
+            continue
+
+        entries.append(ExtrinsicsEntry(frame_index=frame_index, qvec=qvec, tvec=tvec))
+
+    return entries
+
+
+def build_frame_extrinsics(
+    frame_count: int,
+    sample_rate: int,
+    entries: List[ExtrinsicsEntry],
+    invert_quaternion: bool = False,
+    invert_translation: bool = False,
+) -> List[Dict[str, np.ndarray]]:
+    """
+    Build per-frame extrinsics with interpolation.
+    
+    Returns a list of dicts with:
+      - R_cw, T_cw (camera -> world)
+      - R_wc, T_wc (world -> camera)
+    """
+    if frame_count <= 0:
+        return []
+
+    if not entries:
+        return [_identity_extrinsics() for _ in range(frame_count)]
+
+    if sample_rate is None:
+        sample_rate = 0
+    # Leave sample_rate at 0 so _build_sample_frames can infer
+    # an endpoint-inclusive rate based on entries and frame_count.
+
+    inferred_rate = None
+    if sample_rate == 0:
+        denom = max(len(entries) - 1, 1)
+        inferred_rate = frame_count / denom if frame_count > 0 else 0
+
+    sample_frames = _build_sample_frames(entries, sample_rate, frame_count)
+    sample_frames, entries = _sort_samples(sample_frames, entries)
+
+    q_cw_armature_list = []
+    t_cw_armature_list = []
+    for entry in entries:
+        if invert_quaternion:
+            q_wc_colmap = _normalize_quat(entry.qvec)
+            q_cw_colmap = _invert_quat(q_wc_colmap)
+        else:
+            q_cw_colmap = _normalize_quat(entry.qvec)
+            q_wc_colmap = _invert_quat(q_cw_colmap)
+
+        R_wc_colmap = _qvec_to_rotmat(q_wc_colmap)
+        R_cw_colmap = R_wc_colmap.T
+
+        t_input = entry.tvec.reshape(3)
+        if invert_translation:
+            t_wc_colmap = t_input
+            t_cw_colmap = -(R_cw_colmap @ t_wc_colmap)
+        else:
+            t_cw_colmap = t_input
+            t_wc_colmap = -(R_wc_colmap @ t_cw_colmap)
+
+        # Need to convert into armature space here - since interpolation relies on valid armature-space q/t values
+        R_cw_armature, t_cw_armature = convert_colmap_pose_to_armature_pose(R_cw_colmap, t_cw_colmap)
+        q_cw_armature = _rotmat_to_qvec(R_cw_armature)
+
+        q_cw_armature_list.append(q_cw_armature)
+        t_cw_armature_list.append(t_cw_armature)
+
+    per_frame: List[Dict[str, np.ndarray]] = []
+    for frame_idx in range(frame_count):
+        if frame_idx <= sample_frames[0]:
+            q_cw_armature = q_cw_armature_list[0]
+            t_cw_armature = t_cw_armature_list[0]
+        elif frame_idx >= sample_frames[-1]:
+            q_cw_armature = q_cw_armature_list[-1]
+            t_cw_armature = t_cw_armature_list[-1]
+        else:
+            right = int(np.searchsorted(sample_frames, frame_idx, side="right"))
+            left = max(0, right - 1)
+            right = min(right, len(sample_frames) - 1)
+            left_frame = sample_frames[left]
+            right_frame = sample_frames[right]
+            if right_frame == left_frame:
+                alpha = 0.0
+            else:
+                alpha = (frame_idx - left_frame) / (right_frame - left_frame)
+            q_cw_armature = _quat_slerp(q_cw_armature_list[left], q_cw_armature_list[right], alpha)
+            t_cw_armature = _lerp_vec(t_cw_armature_list[left], t_cw_armature_list[right], alpha)
+
+        R_cw_armature = _qvec_to_rotmat(q_cw_armature)
+        R_wc_armature = R_cw_armature.T
+        t_wc_armature = -(R_wc_armature @ t_cw_armature)
+
+        T_cw_armature = np.eye(4, dtype=np.float64)
+        T_cw_armature[:3, :3] = R_cw_armature
+        T_cw_armature[:3, 3] = t_cw_armature
+
+        T_wc_armature = np.eye(4, dtype=np.float64)
+        T_wc_armature[:3, :3] = R_wc_armature
+        T_wc_armature[:3, 3] = t_wc_armature
+
+        per_frame.append(
+            {
+                "R_cw": R_cw_armature,
+                "t_cw": t_cw_armature,
+                "R_wc": R_wc_armature,
+                "t_wc": t_wc_armature,
+                "T_cw": T_cw_armature,
+                "T_wc": T_wc_armature,
+            }
+        )
+
+    return per_frame
+
+
+def _build_sample_frames(entries: List[ExtrinsicsEntry], sample_rate: int, frame_count: int) -> List[int]:
+    sample_indices = [e.frame_index for e in entries if e.frame_index is not None]
+    if len(sample_indices) != len(entries):
+        # Fallback to sequential samples if any index is missing.
+        sample_indices = list(range(len(entries)))
+
+    # Normalize 1-based indices to 0-based so entry 1 maps to frame 0.
+    if sample_indices and min(sample_indices) >= 1:
+        sample_indices = [idx - 1 for idx in sample_indices]
+
+    if sample_rate is None or sample_rate <= 0:
+        # Use frame_count/(N-1) so a downsample rate like 20 is preserved.
+        denom = max(len(entries) - 1, 1)
+        sample_rate = frame_count / denom if frame_count > 0 else 0
+
+    sample_frames = []
+    for idx in sample_indices:
+        frame = int(round(idx * sample_rate))
+        if frame_count > 0:
+            frame = max(0, min(frame, frame_count - 1))
+        sample_frames.append(frame)
+    return sample_frames
+
+
+def _sort_samples(sample_frames: List[int], entries: List[ExtrinsicsEntry]):
+    pairs = sorted(zip(sample_frames, entries), key=lambda x: x[0])
+    frames_sorted = [p[0] for p in pairs]
+    entries_sorted = [p[1] for p in pairs]
+    return frames_sorted, entries_sorted
+
+
+def _identity_extrinsics() -> Dict[str, np.ndarray]:
+    return {
+        "R_cw": np.eye(3, dtype=np.float64),
+        "T_cw": np.eye(4, dtype=np.float64),
+        "R_wc": np.eye(3, dtype=np.float64),
+        "T_wc": np.eye(4, dtype=np.float64),
+    }
+
+def _is_monotonic(values: List[int]) -> bool:
+    return all(a <= b for a, b in zip(values, values[1:]))
+
+
+def _normalize_quat(q: np.ndarray) -> np.ndarray:
+    q = np.asarray(q, dtype=np.float64).reshape(4)
+    n = np.linalg.norm(q)
+    if n < 1e-8:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    return q / n
+
+
+def _invert_quat(q: np.ndarray) -> np.ndarray:
+    q = _normalize_quat(q)
+    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=np.float64)
+
+
+def _lerp_vec(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+    return (1.0 - t) * a + t * b
+
+
+def _quat_slerp(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
+    q0 = _normalize_quat(q0)
+    q1 = _normalize_quat(q1)
+
+    dot = float(np.dot(q0, q1))
+    if dot < 0.0:
+        q1 = -q1
+        dot = -dot
+
+    if dot > 0.9995:
+        return _normalize_quat(_lerp_vec(q0, q1, t))
+
+    theta_0 = np.arccos(np.clip(dot, -1.0, 1.0))
+    sin_theta_0 = np.sin(theta_0)
+    theta = theta_0 * t
+    sin_theta = np.sin(theta)
+
+    s0 = np.cos(theta) - dot * sin_theta / sin_theta_0
+    s1 = sin_theta / sin_theta_0
+    return (s0 * q0) + (s1 * q1)
+
+
+def _qvec_to_rotmat(qvec: np.ndarray) -> np.ndarray:
+    q = _normalize_quat(qvec)
+    qw, qx, qy, qz = q
+    return np.array(
+        [
+            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _rotmat_to_qvec(rot_mat: np.ndarray) -> np.ndarray:
+    rot_mat = np.asarray(rot_mat, dtype=np.float64).reshape(3, 3)
+    trace = np.trace(rot_mat)
+    if trace > 0.0:
+        s = np.sqrt(trace + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (rot_mat[2, 1] - rot_mat[1, 2]) / s
+        qy = (rot_mat[0, 2] - rot_mat[2, 0]) / s
+        qz = (rot_mat[1, 0] - rot_mat[0, 1]) / s
+    elif rot_mat[0, 0] > rot_mat[1, 1] and rot_mat[0, 0] > rot_mat[2, 2]:
+        s = np.sqrt(1.0 + rot_mat[0, 0] - rot_mat[1, 1] - rot_mat[2, 2]) * 2.0
+        qw = (rot_mat[2, 1] - rot_mat[1, 2]) / s
+        qx = 0.25 * s
+        qy = (rot_mat[0, 1] + rot_mat[1, 0]) / s
+        qz = (rot_mat[0, 2] + rot_mat[2, 0]) / s
+    elif rot_mat[1, 1] > rot_mat[2, 2]:
+        s = np.sqrt(1.0 + rot_mat[1, 1] - rot_mat[0, 0] - rot_mat[2, 2]) * 2.0
+        qw = (rot_mat[0, 2] - rot_mat[2, 0]) / s
+        qx = (rot_mat[0, 1] + rot_mat[1, 0]) / s
+        qy = 0.25 * s
+        qz = (rot_mat[1, 2] + rot_mat[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + rot_mat[2, 2] - rot_mat[0, 0] - rot_mat[1, 1]) * 2.0
+        qw = (rot_mat[1, 0] - rot_mat[0, 1]) / s
+        qx = (rot_mat[0, 2] + rot_mat[2, 0]) / s
+        qy = (rot_mat[1, 2] + rot_mat[2, 1]) / s
+        qz = 0.25 * s
+
+    return _normalize_quat(np.array([qw, qx, qy, qz], dtype=np.float64))

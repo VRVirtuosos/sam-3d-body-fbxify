@@ -54,10 +54,13 @@ class SAM3DBody(BaseModel):
         # Create backbone feature extractor for human crops
         self.backbone = create_backbone(self.cfg.MODEL.BACKBONE.TYPE, self.cfg)
 
-        # Create header for pose estimation output
+        """ LOD SUPPORT FOR MHR HEAD - START """
         # Get LOD from config if available
         lod = getattr(self.cfg.MODEL.MHR_HEAD, "LOD", None) if hasattr(self.cfg.MODEL, "MHR_HEAD") else None
         self.head_pose = build_head(self.cfg, self.cfg.MODEL.PERSON_HEAD.POSE_TYPE, lod=lod)
+        # Create header for pose estimation output
+        # self.head_pose = build_head(self.cfg, self.cfg.MODEL.PERSON_HEAD.POSE_TYPE)
+        """ LOD SUPPORT FOR MHR HEAD - END """
         self.head_pose.hand_pose_comps_ori = nn.Parameter(
             self.head_pose.hand_pose_comps.clone(), requires_grad=False
         )
@@ -71,7 +74,10 @@ class SAM3DBody(BaseModel):
 
         # Define header for hand pose estimation
         self.head_pose_hand = build_head(
-            self.cfg, self.cfg.MODEL.PERSON_HEAD.POSE_TYPE, enable_hand_model=True, lod=lod
+            self.cfg,
+            self.cfg.MODEL.PERSON_HEAD.POSE_TYPE,
+            enable_hand_model=True,
+            lod=lod, # LOD SUPPORT FOR MHR HEAD
         )
         self.head_pose_hand.hand_pose_comps_ori = nn.Parameter(
             self.head_pose_hand.hand_pose_comps.clone(), requires_grad=False

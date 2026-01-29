@@ -6,14 +6,13 @@ import sys
 import math
 import os
 
-metadata_path = sys.argv[-8]
-joint_mapping_path = sys.argv[-7]
-root_motion_path = sys.argv[-6]
-rest_pose_path = sys.argv[-5]
-faces_path = sys.argv[-4]
+metadata_path = sys.argv[-7]
+joint_mapping_path = sys.argv[-6]
+root_motion_path = sys.argv[-5]
+rest_pose_path = sys.argv[-4]
 fbx_path = sys.argv[-3]
-lod_fbx_path = sys.argv[-2] if sys.argv[-2] else None
-mesh_obj_path = sys.argv[-1] if sys.argv[-1] else None
+lod_fbx_path = sys.argv[-2]
+mesh_obj_path = sys.argv[-1]
 
 with open(metadata_path, "r", encoding="utf-8") as f:
     metadata = json.load(f)["metadata"]
@@ -23,8 +22,19 @@ with open(root_motion_path, "r", encoding="utf-8") as f:
     root_motion = json.load(f)["root_motion"]
 with open(rest_pose_path, "r", encoding="utf-8") as f:
     rest_pose = json.load(f)["rest_pose"]
-with open(faces_path) as f:
-    faces = json.load(f)["faces"]
+
+root_motion_by_frame = {
+    entry.get("frame_index"): entry
+    for entry in (root_motion or [])
+    if isinstance(entry, dict) and entry.get("frame_index") is not None
+}
+
+# ------------------------------------------------------------------------
+# DEV TOOLS FOR DEBUGGING/FAST APPLY
+# ------------------------------------------------------------------------
+APPLY_ROOT_MOTION_OVERRIDE = True
+APPLY_POSE_OVERRIDE = True
+APPLY_BLENDER_AXIS_ROTATION = True
 
 # ------------------------------------------------------------------------
 # METADATA EXTRACTION
@@ -32,6 +42,7 @@ with open(faces_path) as f:
 
 num_keyframes = metadata["num_keyframes"]
 profile_name = metadata["profile_name"]
+height_offset = metadata.get("height_offset", 0.0)
 fps = metadata.get("fps", 30.0)  # Frame rate, default to 30.0 if not present
 armature_name = f"sam3d_body_{profile_name}_armature"
 
@@ -573,9 +584,10 @@ def reset_pose_bones(blender_pose_bones):
 # set frame 0 as the tpose to preserve the rest pose
 bpy.context.scene.frame_set(0)
 reset_pose_bones(blender_pose_bones)
-for p in blender_pose_bones:
-    # p.keyframe_insert(data_path="location", frame=0)
-    p.keyframe_insert(data_path="rotation_quaternion", frame=0)
+if APPLY_POSE_OVERRIDE:
+    for p in blender_pose_bones:
+        # p.keyframe_insert(data_path="location", frame=0)
+        p.keyframe_insert(data_path="rotation_quaternion", frame=0)
 
 arm_world = arm_obj.matrix_world.copy()
 arm_world_inv = arm_world.inverted()
@@ -907,18 +919,20 @@ def breadth_first_pose_application(joint_mapping, frame_idx, suppress_all_missin
             bones_list = ", ".join(missing_rotation_bones)
             print(f"  WARNING: No rotation found for frame {frame_idx + 1} on the following bones: [{bones_list}]")
 
-    # inefficient
-    # for bone in blender_pose_bones:
-    #    bone.keyframe_insert("rotation_quaternion", frame=frame_idx + 1)
-    for pbone in blender_pose_bones:
-        fcs4 = fcurve_cache[pbone.name]
-        insert_quat_key(
-            fcs4,
-            frame_idx + 1,
-            pbone.rotation_quaternion,
-            interpolation='BEZIER',
-            handle_type='AUTO'
-        )
+    # Insert keyframes for bone rotations if pose override is enabled
+    if APPLY_POSE_OVERRIDE:
+        # inefficient
+        # for bone in blender_pose_bones:
+        #    bone.keyframe_insert("rotation_quaternion", frame=frame_idx + 1)
+        for pbone in blender_pose_bones:
+            fcs4 = fcurve_cache[pbone.name]
+            insert_quat_key(
+                fcs4,
+                frame_idx + 1,
+                pbone.rotation_quaternion,
+                interpolation='BEZIER',
+                handle_type='AUTO'
+            )
 
     # Print progress in parseable format for parent process
     print(f"PROGRESS: {frame_idx + 1}/{num_keyframes}", flush=True)
@@ -926,11 +940,16 @@ def breadth_first_pose_application(joint_mapping, frame_idx, suppress_all_missin
     
     return all_missing
 
-action, fcurve_cache = build_fcurve_cache(
-    arm_obj,
-    blender_pose_bones,
-    action_name="ImportedAction"
-)
+# Build fcurve cache if pose override is enabled
+if APPLY_POSE_OVERRIDE:
+    action, fcurve_cache = build_fcurve_cache(
+        arm_obj,
+        blender_pose_bones,
+        action_name="ImportedAction"
+    )
+else:
+    # Create dummy cache to avoid errors when pose is disabled
+    fcurve_cache = {}
 
 # Track consecutive frames with missing rotations for consolidated warnings
 missing_rotation_range_start = None
@@ -980,27 +999,44 @@ bpy.ops.object.mode_set(mode="OBJECT")
 # ------------------------------------------------------------------------
 bpy.ops.object.mode_set(mode="OBJECT")
 
-if root_motion is not None and len(root_motion) > 0: # root motion can be passed empty, if the user doesn't want root motion
+if APPLY_ROOT_MOTION_OVERRIDE and root_motion is not None and len(root_motion) > 0: # root motion can be passed empty, if the user doesn't want root motion
     # In object mode, use root_motion, which is a list of global rotation euler angles and camera translation vectors
     # apply keyframes to the armature, not any bone
     arm_obj.rotation_mode = 'XYZ'
-    
-    for frame_idx, root_motion_entry in enumerate(root_motion, start=1):
-        # Use camera translation as-is (the base 90° rotation at frame 0 handles coord system)
-        cam_translation = root_motion_entry["pred_cam_t"]
-
-        # TODO: This is really weird, but pred_cam_t has a y (up) value that is usually 1, and when people squat in test cases it goes up? Jumping makes it go down? Consistently?
-        # Maybe need to raise an issue to MHR or ask them? For now, the weird solution is to offset the hip bone by its rest_pose height, then use "1 - cam_translation[1]"
-        # for the up value because that weirdly works, on all my test cases. Dear God, let this be the only 'Q_rsqrt' solution in the codebase. 
-        # arm_obj.location = Vector((cam_translation[0], cam_translation[2], cam_translation[1]))
-        arm_obj.location = Vector((cam_translation[0], cam_translation[2], 1 - cam_translation[1]))
+        
+    for root_motion_entry in root_motion:
+        # Get frame_index from entry (0-based, matching joint_mapping)
+        # Convert to 1-based for Blender keyframes (frame 0 is rest pose)
+        frame_index_0based = root_motion_entry.get("frame_index")
+        if frame_index_0based is None:
+            print(f"  WARNING: root_motion entry missing 'frame_index', skipping entry")
+            continue
+        
+        frame_idx = frame_index_0based + 1  # Convert to 1-based for Blender
+        
+        cam_translation = root_motion_entry.get("pred_cam_t")
+        if cam_translation is None:
+            print("  WARNING: root_motion entry missing 'pred_cam_t', skipping entry")
+            continue
+        cam_translation = list(cam_translation)
+        # height is cam_translation[1], use the metadata height_offset to adjust it
+        cam_translation[1] += height_offset
+        if APPLY_BLENDER_AXIS_ROTATION:
+            # armature space has z as backward, y as up. So in the 90 degree X rotation, we swap y and z, and negate z
+            final_location = Vector((cam_translation[0], - cam_translation[2], cam_translation[1]))
+        else:
+            final_location = Vector((cam_translation[0], cam_translation[1], cam_translation[2]))
+        arm_obj.location = final_location
 
         # As far as I can tell, this value of global rotation is already passed to the root bone (hips), but if you'd rather 
         # have rotation be a "root" motion, apply it here and skip in pose application
         # euler = root_motion_entry["global_rot"]
         
         # Each keyframe does need to rotate by math.pi/2 x rotation to "stand up" in blender
-        arm_obj.rotation_euler = (math.pi/2, 0, 0)
+        if APPLY_BLENDER_AXIS_ROTATION:
+            arm_obj.rotation_euler = (math.pi/2, 0, 0)
+        else:
+            arm_obj.rotation_euler = (0, 0, 0)
 
         arm_obj.keyframe_insert(data_path="location", frame=frame_idx)
         arm_obj.keyframe_insert(data_path="rotation_euler", frame=frame_idx)
@@ -1021,7 +1057,10 @@ bpy.context.scene.frame_set(0)
 # After we've set all the rotations, we should rotate the entire armature to 90,0,0 (degrees) so that the rig "stands up" in blender
 arm_obj.location = Vector((0, 0, 0))
 # Convert 90° X rotation to quaternion
-arm_obj.rotation_euler = (math.pi/2, 0, 0)
+if APPLY_BLENDER_AXIS_ROTATION:
+    arm_obj.rotation_euler = (math.pi/2, 0, 0)
+else:
+    arm_obj.rotation_euler = (0, 0, 0)
 arm_obj.keyframe_insert(data_path="location", frame=0)
 arm_obj.keyframe_insert(data_path="rotation_euler", frame=0)
 

@@ -211,6 +211,7 @@ class SAM3DBodyEstimator:
                     "mask": masks[idx] if masks is not None else None,
                     "pred_joint_coords": out["pred_joint_coords"][idx],
                     "pred_global_rots": out["joint_global_rots"][idx],
+                    "mhr_model_params": out["mhr_model_params"][idx],
                 }
             )
 
@@ -255,10 +256,5 @@ class SAM3DBodyEstimator:
                         ).item(),
                     ]
                 )
-
-        # Lightweight cleanup: delete tensors but don't clear cache (for video processing efficiency)
-        del batch, out, pose_output
-        if inference_type == "full":
-            del batch_lhand, batch_rhand
 
         return all_out

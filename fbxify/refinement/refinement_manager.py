@@ -1,7 +1,9 @@
 from fbxify.refinement.refinement_config import RefinementConfig
 import re
+import functools
 import math
 import numpy as np
+import copy
 from typing import Dict, Any, Optional
 import os
 from datetime import datetime
@@ -477,6 +479,7 @@ class RefinementManager:
         self.config = config
         self.fps = fps
         self.dt = 1.0 / fps  # time step in seconds
+        self.last_refinement_logs = None
     
     def _calculate_vector_change_percent(self, v_original, v_refined):
         """
@@ -508,6 +511,29 @@ class RefinementManager:
     def _identity_matrix(self):
         """Return a 3x3 identity matrix."""
         return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+    def _matrix_to_euler_deg(self, rot_t):
+        """
+        Convert a 3x3 rotation matrix to Euler angles (degrees).
+        Uses a standard XYZ convention with a singularity fallback.
+        """
+        rot = self._parse_rotation_matrix(rot_t)
+        if rot is None:
+            return None
+        r00, r01, r02 = rot[0]
+        r10, r11, r12 = rot[1]
+        r20, r21, r22 = rot[2]
+        sy = math.sqrt(r00 * r00 + r10 * r10)
+        singular = sy < 1e-6
+        if not singular:
+            x = math.atan2(r21, r22)
+            y = math.atan2(-r20, sy)
+            z = math.atan2(r10, r00)
+        else:
+            x = math.atan2(-r12, r11)
+            y = math.atan2(-r20, sy)
+            z = 0.0
+        return [rad2deg(x), rad2deg(y), rad2deg(z)]
     
     def _convert_to_list(self, value):
         """Convert numpy array or other types to list."""
@@ -614,8 +640,701 @@ class RefinementManager:
         
         return frame_changes
 
-    def apply(self, estimation_results: Dict[str, Dict[str, Any]], 
-             progress_callback: Optional[callable] = None) -> Dict[str, Dict[str, Any]]:
+    def _log_print(self, log_file, msg):
+        print(msg)
+        log_file.write(msg + "\n")
+        log_file.flush()
+
+    def _nan_vector(self, length):
+        return [float("nan")] * length
+
+    def _first_non_none(self, series):
+        for item in series:
+            if item is not None:
+                return item
+        return None
+
+    def _first_non_none_length(self, series):
+        first_item = self._first_non_none(series)
+        return len(first_item) if first_item is not None else 0
+
+    def _rebuild_series_from_items(self, refined_items, item_count):
+        series_length = len(refined_items[0]) if refined_items and refined_items[0] else 0
+        rebuilt_series = []
+        for t in range(series_length):
+            frame_items = []
+            for item_idx in range(item_count):
+                frame_items.append(refined_items[item_idx][t])
+            rebuilt_series.append(frame_items)
+        return rebuilt_series
+
+    def _copy_value(self, value, is_rotation):
+        if is_rotation:
+            return [[value[k][l] for l in range(3)] for k in range(3)]
+        return list(value)
+
+    def _interpolate_value(self, prev_value, next_value, t, is_rotation):
+        if is_rotation:
+            q1 = quat_from_R(prev_value)
+            q2 = quat_from_R(next_value)
+            q_interp = slerp(q1, q2, t)
+            return R_from_quat(q_interp)
+        return [
+            prev_value[k] + t * (next_value[k] - prev_value[k])
+            for k in range(3)
+        ]
+
+    def _fill_range_with_value(self, result, start_idx, end_idx, value, is_rotation):
+        for j in range(start_idx, end_idx):
+            result[j] = self._copy_value(value, is_rotation)
+
+    def _find_prev_valid_index(self, series, start_idx):
+        for j in range(start_idx, -1, -1):
+            if series[j] is not None:
+                return j
+        return None
+
+    def _find_next_valid_index(self, series, start_idx):
+        for j in range(start_idx, len(series)):
+            if series[j] is not None:
+                return j
+        return None
+
+    def _extract_series_per_index(self, series, item_count, transform):
+        extracted = []
+        for item_idx in range(item_count):
+            item_series = []
+            for t in range(len(series)):
+                frame = series[t]
+                if frame is not None and item_idx < len(frame):
+                    item_series.append(transform(frame[item_idx]))
+                else:
+                    item_series.append(None)
+            extracted.append(item_series)
+        return extracted
+
+    def _ensure_3d_vector(self, vector):
+        if isinstance(vector, (list, tuple)) and len(vector) >= 3:
+            return list(vector[:3])
+        return [0.0, 0.0, 0.0]
+
+    def _delta_vector_or_nan(self, orig_value, refined_value):
+        if orig_value is None or refined_value is None:
+            return self._nan_vector(3)
+        return [
+            refined_value[0] - orig_value[0],
+            refined_value[1] - orig_value[1],
+            refined_value[2] - orig_value[2],
+        ]
+
+    def _delta_euler_or_nan(self, orig_rot, refined_rot):
+        if orig_rot is None or refined_rot is None:
+            return self._nan_vector(3)
+        orig_euler = self._matrix_to_euler_deg(orig_rot)
+        refined_euler = self._matrix_to_euler_deg(refined_rot)
+        if orig_euler is None or refined_euler is None:
+            return self._nan_vector(3)
+        return [
+            refined_euler[0] - orig_euler[0],
+            refined_euler[1] - orig_euler[1],
+            refined_euler[2] - orig_euler[2],
+        ]
+
+    def _build_per_joint_deltas(self, series_to_frame_map, orig_series, refined_series, item_count, delta_fn):
+        deltas = []
+        for t in range(len(series_to_frame_map)):
+            orig_frame = orig_series[t] if t < len(orig_series) else None
+            refined_frame = refined_series[t] if t < len(refined_series) else None
+            if orig_frame is None or refined_frame is None:
+                deltas.append([self._nan_vector(3) for _ in range(item_count)])
+                continue
+            frame_deltas = []
+            for j in range(item_count):
+                try:
+                    orig_item = orig_frame[j]
+                    refined_item = refined_frame[j]
+                    frame_deltas.append(delta_fn(orig_item, refined_item))
+                except Exception:
+                    frame_deltas.append(self._nan_vector(3))
+            deltas.append(frame_deltas)
+        return deltas
+
+    def _build_per_frame_deltas(self, series_to_frame_map, orig_series, refined_series, delta_fn):
+        deltas = []
+        for t in range(len(series_to_frame_map)):
+            orig_value = orig_series[t] if t < len(orig_series) else None
+            refined_value = refined_series[t] if t < len(refined_series) else None
+            deltas.append(delta_fn(orig_value, refined_value))
+        return deltas
+
+    def _has_enabled_features(self) -> bool:
+        return (
+            self.config.do_spike_fix or
+            self.config.do_rotation_smoothing or
+            self.config.do_vector_smoothing or
+            self.config.do_root_motion_fix or
+            self.config.do_foot_planting or
+            self.config.do_interpolate_missing_keyframes
+        )
+
+    def _log_refinement_start(self, log_print, log_path, estimation_results):
+        log_print("\n" + "=" * 80)
+        log_print("REFINEMENT PROCESS")
+        log_print("=" * 80)
+        log_print(f"Log file: {log_path}")
+        log_print(f"Frames: {len(sorted([int(k) for k in estimation_results.keys()]))}")
+        log_print("Enabled features:")
+        log_print(f"  - Spike fix: {self.config.do_spike_fix}")
+        log_print(f"  - Rotation smoothing: {self.config.do_rotation_smoothing}")
+        log_print(f"  - Vector smoothing: {self.config.do_vector_smoothing}")
+        log_print(f"  - Root motion fix: {self.config.do_root_motion_fix}")
+        log_print(f"  - Foot planting: {self.config.do_foot_planting}")
+        log_print(f"  - Interpolate missing: {self.config.do_interpolate_missing_keyframes}")
+        log_print("=" * 80 + "\n")
+
+    def _init_refinement_tracking(self):
+        return {
+            "profile_changes": {},
+            "bone_changes": {},
+            "profile_vector_changes": {},
+            "bone_vector_changes": {},
+            "profile_spike_counts": {},
+        }
+
+    def _collect_person_ids_and_frames(self, estimation_results):
+        all_person_ids = set()
+        for frame_data in estimation_results.values():
+            for person_id in frame_data.keys():
+                all_person_ids.add(person_id)
+        frame_indices = sorted([int(k) for k in estimation_results.keys()])
+        return all_person_ids, frame_indices
+
+    def _init_refined_results(self, estimation_results):
+        refined_results = {}
+        for frame_key, frame_data in estimation_results.items():
+            refined_results[frame_key] = {}
+            for person_id_str, person_data in frame_data.items():
+                refined_results[frame_key][person_id_str] = person_data.copy()
+        return refined_results
+
+    def _log_refinement_summary(
+        self,
+        log_print,
+        profile_changes,
+        profile_vector_changes,
+        profile_spike_counts,
+        bone_changes,
+    ):
+        log_print("\n" + "=" * 80)
+        log_print("REFINEMENT SUMMARY")
+        log_print("=" * 80)
+
+        if profile_changes or profile_vector_changes or profile_spike_counts:
+            log_print("\nGeneral refinement:")
+
+            profile_rotation_averages = {}
+            for profile_name, changes in profile_changes.items():
+                if changes:
+                    profile_rotation_averages[profile_name] = sum(changes) / len(changes)
+
+            profile_vector_averages = {}
+            for profile_name, changes in profile_vector_changes.items():
+                if changes:
+                    profile_vector_averages[profile_name] = sum(changes) / len(changes)
+
+            profile_order = ["ARMS", "LEGS", "HANDS", "FINGERS", "HEAD", "ROOT", "DEFAULT"]
+            for profile_name in profile_order:
+                rotation_avg = profile_rotation_averages.get(profile_name)
+                vector_avg = profile_vector_averages.get(profile_name)
+                spike_info = profile_spike_counts.get(profile_name)
+
+                if rotation_avg is not None or vector_avg is not None or spike_info is not None:
+                    parts = []
+                    if rotation_avg is not None:
+                        parts.append(f"Rotation {rotation_avg:.1f}°")
+                    if vector_avg is not None:
+                        parts.append(f"Vector {vector_avg:.1f}% (avg adjusted)")
+                    if spike_info is not None:
+                        spike_count, total_frames = spike_info
+                        spike_pct = (spike_count / total_frames * 100.0) if total_frames > 0 else 0.0
+                        parts.append(f"{spike_count} Spikes ({spike_pct:.1f}%)")
+                    log_print(f"{profile_name}: {' | '.join(parts)}")
+
+            high_change_bones = []
+            increasing_bones = []
+
+            for bone_name, change_deg in bone_changes.items():
+                if change_deg > self.HIGH_CHANGE_THRESHOLD_DEG:
+                    high_change_bones.append((bone_name, change_deg))
+
+                bone_profile = self._profile_name_for(bone_name)
+                if bone_profile in profile_rotation_averages:
+                    profile_avg = profile_rotation_averages[bone_profile]
+                    if change_deg > profile_avg * 2.0 and change_deg > 10.0:
+                        increasing_bones.append((bone_name, change_deg))
+
+            high_change_bones.sort(key=lambda x: x[1], reverse=True)
+            increasing_bones.sort(key=lambda x: x[1], reverse=True)
+
+            if increasing_bones:
+                bone_names = [bone[0] for bone in increasing_bones]
+                log_print(
+                    "\nWarning - The following bones had an increasing average degree modification. "
+                    f"Refinement may be too aggressive: {bone_names}"
+                )
+
+            if high_change_bones:
+                bone_names = [bone[0] for bone in high_change_bones]
+                log_print(
+                    f"Warning - The following bones had a very high (>{self.HIGH_CHANGE_THRESHOLD_DEG:.0f}°) "
+                    f"average modification. Refinement may be too aggressive: {bone_names}"
+                )
+        else:
+            log_print("\nNo rotation changes tracked.")
+
+        log_print("\n" + "=" * 80)
+        log_print("REFINEMENT PROCESS - COMPLETE")
+        log_print("=" * 80 + "\n")
+
+    def _find_template_person_data(self, estimation_results, frame_indices, person_id):
+        for frame_idx in frame_indices:
+            frame_key = str(frame_idx)
+            frame_data = estimation_results.get(frame_key, {})
+            person_data = frame_data.get(str(person_id))
+            if person_data is not None:
+                return person_data
+        return None
+
+    def _append_person_series_entry(self, series, person_data):
+        series["joint_rotations"].append(self._convert_to_list(person_data.get("pred_global_rots")))
+        series["root_rotations"].append(self._convert_to_list(person_data.get("global_rot")))
+        series["root_translations"].append(self._convert_to_list(person_data.get("pred_cam_t")))
+        series["joint_coords"].append(self._convert_to_list(person_data.get("pred_joint_coords")))
+        series["keypoints_3d"].append(self._convert_to_list(person_data.get("pred_keypoints_3d")))
+
+    def _collect_person_series(self, estimation_results, frame_indices, person_id):
+        series = {
+            "joint_rotations": [],
+            "root_rotations": [],
+            "root_translations": [],
+            "joint_coords": [],
+            "keypoints_3d": [],
+        }
+        original_frame_indices = set()
+        series_to_frame_map = []
+
+        for frame_idx in frame_indices:
+            frame_key = str(frame_idx)
+            frame_data = estimation_results.get(frame_key, {})
+            person_data = frame_data.get(str(person_id))
+
+            if person_data is None:
+                if self.config.do_interpolate_missing_keyframes:
+                    for key in series:
+                        series[key].append(None)
+                    series_to_frame_map.append(frame_idx)
+                continue
+
+            original_frame_indices.add(frame_idx)
+            series_to_frame_map.append(frame_idx)
+            self._append_person_series_entry(series, person_data)
+
+        return series, original_frame_indices, series_to_frame_map
+
+    def _clone_original_series(self, series):
+        return {
+            "joint_rotations": copy.deepcopy(series["joint_rotations"]),
+            "root_rotations": copy.deepcopy(series["root_rotations"]),
+            "root_translations": copy.deepcopy(series["root_translations"]),
+            "joint_coords": copy.deepcopy(series["joint_coords"]),
+        }
+
+    def _refine_person_rotations(self, joint_rotations_series, profile_changes, bone_changes, profile_spike_counts):
+        if not joint_rotations_series or not any(x is not None for x in joint_rotations_series):
+            return joint_rotations_series
+
+        num_joints = self._first_non_none_length(joint_rotations_series)
+        if num_joints == 0:
+            return joint_rotations_series
+
+        def _parse_or_identity(rot):
+            parsed = self._parse_rotation_matrix(rot)
+            return parsed if parsed is not None else self._identity_matrix()
+
+        refined_joint_rots = []
+        per_joint_series = self._extract_series_per_index(
+            joint_rotations_series, num_joints, _parse_or_identity
+        )
+        for joint_idx, joint_rot_series in enumerate(per_joint_series):
+            bone_name = JOINT_NAMES[joint_idx]
+            prof = self._profile_for(bone_name)
+            profile_name = self._profile_name_for(bone_name)
+            refined_joint_rot = self._process_rotation_series(
+                joint_rot_series,
+                prof,
+                bone_name=bone_name,
+                profile_name=profile_name,
+                profile_changes=profile_changes,
+                bone_changes=bone_changes,
+                profile_spike_counts=profile_spike_counts,
+            )
+            refined_joint_rots.append(refined_joint_rot)
+
+        return self._rebuild_series_from_items(refined_joint_rots, num_joints)
+
+    def _refine_base_rotations(self, base_rotations_series, profile_changes, bone_changes, profile_spike_counts):
+        if not base_rotations_series or not any(x is not None for x in base_rotations_series):
+            return base_rotations_series
+
+        parsed_base_rotations = []
+        for rot in base_rotations_series:
+            if rot is None:
+                parsed_base_rotations.append(None)
+            else:
+                parsed = self._parse_rotation_matrix(rot)
+                parsed_base_rotations.append(parsed if parsed is not None else self._identity_matrix())
+
+        prof = self.config.profiles.get("root", self.config.profiles.get("*"))
+        return self._process_rotation_series(
+            parsed_base_rotations,
+            prof,
+            bone_name="root_rotation",
+            profile_name="ROOT",
+            profile_changes=profile_changes,
+            bone_changes=bone_changes,
+            profile_spike_counts=profile_spike_counts,
+        )
+
+    def _refine_base_translations(self, base_translations_series, profile_vector_changes, bone_vector_changes):
+        if not base_translations_series or not any(x is not None for x in base_translations_series):
+            return base_translations_series
+
+        prof = self.config.profiles.get("root", self.config.profiles.get("*"))
+        return self._process_vector_series(
+            base_translations_series,
+            prof,
+            bone_name="root_translation",
+            profile_name="ROOT",
+            profile_vector_changes=profile_vector_changes,
+            bone_vector_changes=bone_vector_changes,
+        )
+
+    def _refine_joint_coords(self, joint_coords_series, profile_vector_changes, bone_vector_changes):
+        if not joint_coords_series or not any(x is not None for x in joint_coords_series):
+            return joint_coords_series
+
+        num_joints = self._first_non_none_length(joint_coords_series)
+        if num_joints == 0:
+            return joint_coords_series
+
+        refined_joint_coords = []
+        per_joint_series = self._extract_series_per_index(
+            joint_coords_series, num_joints, self._ensure_3d_vector
+        )
+        for joint_idx, joint_coord_series in enumerate(per_joint_series):
+            bone_name = JOINT_NAMES[joint_idx] if joint_idx < len(JOINT_NAMES) else f"joint_{joint_idx}"
+            prof = self._profile_for(bone_name)
+            profile_name = self._profile_name_for(bone_name)
+            refined_joint_coord = self._process_vector_series(
+                joint_coord_series,
+                prof,
+                bone_name=bone_name,
+                profile_name=profile_name,
+                profile_vector_changes=profile_vector_changes,
+                bone_vector_changes=bone_vector_changes,
+            )
+            refined_joint_coords.append(refined_joint_coord)
+
+        return self._rebuild_series_from_items(refined_joint_coords, num_joints)
+
+    def _refine_keypoints(self, keypoints_3d_series, profile_vector_changes, bone_vector_changes):
+        if not keypoints_3d_series or not any(x is not None for x in keypoints_3d_series):
+            return keypoints_3d_series
+
+        num_keypoints = self._first_non_none_length(keypoints_3d_series)
+        if num_keypoints == 0:
+            return keypoints_3d_series
+
+        refined_keypoints_3d = []
+        per_keypoint_series = self._extract_series_per_index(
+            keypoints_3d_series, num_keypoints, self._ensure_3d_vector
+        )
+        for kp_idx, kp_series in enumerate(per_keypoint_series):
+            bone_name = f"keypoint_{kp_idx}"
+            prof = self.config.profiles.get("*", self.config.profiles.get("root"))
+            profile_name = "DEFAULT"
+            refined_kp = self._process_vector_series(
+                kp_series,
+                prof,
+                bone_name=bone_name,
+                profile_name=profile_name,
+                profile_vector_changes=profile_vector_changes,
+                bone_vector_changes=bone_vector_changes,
+            )
+            refined_keypoints_3d.append(refined_kp)
+
+        return self._rebuild_series_from_items(refined_keypoints_3d, num_keypoints)
+
+    def _apply_base_motion_adjustments(self, base_rotations_series, base_translations_series, joint_coords_series, log_print):
+        # FYI - "root" is for user's reference, since MHR has a "root" joint, you'll see "base" refer to the armature obj, while "root" refer to the root joint here
+        if self.config.do_root_motion_fix and base_rotations_series and base_translations_series:
+            log_print("\n" + "=" * 80)
+            log_print("ROOT MOTION STABILIZATION")
+            log_print("=" * 80)
+            base_motion_dict = {
+                "translation": base_translations_series,
+                "rotation": base_rotations_series,
+            }
+            base_motion_dict = self._base_stabilization(base_motion_dict, log_print)
+            base_translations_series = base_motion_dict["translation"]
+            base_rotations_series = base_motion_dict["rotation"]
+            log_print("=" * 80 + "\n")
+
+        if self.config.do_foot_planting and base_rotations_series and base_translations_series and joint_coords_series:
+            base_motion_dict = {
+                "translation": base_translations_series,
+                "rotation": base_rotations_series,
+            }
+            base_motion_dict, should_plant = self._prepare_base_motion_for_foot_planting(base_motion_dict, log_print)
+            if should_plant:
+                base_motion_dict = self._foot_planting_adjustment(base_motion_dict, joint_coords_series, log_print)
+                base_translations_series = base_motion_dict["translation"]
+                base_rotations_series = base_motion_dict["rotation"]
+
+        return base_translations_series, base_rotations_series
+
+    def _build_person_refinement_logs(
+        self,
+        series_to_frame_map,
+        orig_series,
+        joint_rotations_series,
+        base_rotations_series,
+        base_translations_series,
+        joint_coords_series,
+    ):
+        person_logs = {
+            "frames": series_to_frame_map,
+        }
+
+        num_joints_coords = self._first_non_none_length(orig_series["joint_coords"])
+        if num_joints_coords == 0:
+            num_joints_coords = self._first_non_none_length(joint_coords_series)
+        if num_joints_coords > 0:
+            coords_deltas = self._build_per_joint_deltas(
+                series_to_frame_map,
+                orig_series["joint_coords"],
+                joint_coords_series,
+                num_joints_coords,
+                self._delta_vector_or_nan,
+            )
+            person_logs["pred_joint_coords"] = coords_deltas
+
+        num_joints_rots = self._first_non_none_length(orig_series["joint_rotations"])
+        if num_joints_rots == 0:
+            num_joints_rots = self._first_non_none_length(joint_rotations_series)
+        if num_joints_rots > 0:
+            rot_deltas = self._build_per_joint_deltas(
+                series_to_frame_map,
+                orig_series["joint_rotations"],
+                joint_rotations_series,
+                num_joints_rots,
+                self._delta_euler_or_nan,
+            )
+            person_logs["pred_global_rots"] = rot_deltas
+
+        cam_deltas = self._build_per_frame_deltas(
+            series_to_frame_map,
+            orig_series["root_translations"],
+            base_translations_series,
+            self._delta_vector_or_nan,
+        )
+        if cam_deltas:
+            person_logs["pred_cam_t"] = cam_deltas
+
+        global_rot_deltas = self._build_per_frame_deltas(
+            series_to_frame_map,
+            orig_series["root_rotations"],
+            base_rotations_series,
+            self._delta_euler_or_nan,
+        )
+        if global_rot_deltas:
+            person_logs["global_rot"] = global_rot_deltas
+
+        return person_logs
+
+    def _should_keep_interpolated_frame(self, series_idx, joint_rotations_series, keypoints_3d_series):
+        if (
+            series_idx < len(joint_rotations_series) and joint_rotations_series[series_idx] is not None and
+            series_idx < len(keypoints_3d_series) and keypoints_3d_series[series_idx] is not None
+        ):
+            return True
+        return False
+
+    def _ensure_refined_person_entry(
+        self,
+        refined_results,
+        estimation_results,
+        frame_key,
+        person_id,
+        was_original,
+        has_interpolated_data,
+        template_person_data,
+    ):
+        if frame_key not in refined_results:
+            refined_results[frame_key] = {}
+
+        if str(person_id) not in refined_results[frame_key]:
+            if was_original:
+                original_data = estimation_results.get(frame_key, {}).get(str(person_id))
+                if original_data:
+                    refined_results[frame_key][str(person_id)] = original_data.copy()
+                else:
+                    return None
+            elif has_interpolated_data and template_person_data is not None:
+                refined_person_data = template_person_data.copy()
+                refined_results[frame_key][str(person_id)] = refined_person_data
+            else:
+                return None
+
+        return refined_results[frame_key][str(person_id)]
+
+    def _write_refined_person_frames(
+        self,
+        person_id,
+        estimation_results,
+        refined_results,
+        series_to_frame_map,
+        original_frame_indices,
+        template_person_data,
+        joint_rotations_series,
+        base_rotations_series,
+        base_translations_series,
+        joint_coords_series,
+        keypoints_3d_series,
+    ):
+        for series_idx, frame_idx in enumerate(series_to_frame_map):
+            frame_key = str(frame_idx)
+            was_original = frame_idx in original_frame_indices
+
+            has_interpolated_data = False
+            if self.config.do_interpolate_missing_keyframes and not was_original:
+                has_interpolated_data = self._should_keep_interpolated_frame(
+                    series_idx, joint_rotations_series, keypoints_3d_series
+                )
+
+            if not was_original and not has_interpolated_data:
+                continue
+
+            refined_person_data = self._ensure_refined_person_entry(
+                refined_results,
+                estimation_results,
+                frame_key,
+                person_id,
+                was_original,
+                has_interpolated_data,
+                template_person_data,
+            )
+            if refined_person_data is None:
+                continue
+
+            if series_idx < len(joint_rotations_series) and joint_rotations_series[series_idx] is not None:
+                refined_person_data["pred_global_rots"] = joint_rotations_series[series_idx]
+
+            if series_idx < len(base_rotations_series) and base_rotations_series[series_idx] is not None:
+                refined_person_data["global_rot"] = base_rotations_series[series_idx]
+
+            if series_idx < len(base_translations_series) and base_translations_series[series_idx] is not None:
+                refined_person_data["pred_cam_t"] = base_translations_series[series_idx]
+
+            if series_idx < len(joint_coords_series) and joint_coords_series[series_idx] is not None:
+                refined_person_data["pred_joint_coords"] = joint_coords_series[series_idx]
+
+            if series_idx < len(keypoints_3d_series) and keypoints_3d_series[series_idx] is not None:
+                refined_person_data["pred_keypoints_3d"] = keypoints_3d_series[series_idx]
+
+            if (
+                refined_person_data.get("pred_joint_coords") is None or
+                refined_person_data.get("pred_global_rots") is None or
+                refined_person_data.get("pred_keypoints_3d") is None
+            ):
+                if not was_original:
+                    del refined_results[frame_key][str(person_id)]
+                    if not refined_results[frame_key]:
+                        del refined_results[frame_key]
+
+    def _refine_person(
+        self,
+        person_id,
+        estimation_results,
+        frame_indices,
+        refined_results,
+        profile_changes,
+        bone_changes,
+        profile_vector_changes,
+        bone_vector_changes,
+        profile_spike_counts,
+        collect_refinement_logs,
+        log_print,
+    ):
+        template_person_data = self._find_template_person_data(estimation_results, frame_indices, person_id)
+        series, original_frame_indices, series_to_frame_map = self._collect_person_series(
+            estimation_results, frame_indices, person_id
+        )
+        orig_series = self._clone_original_series(series)
+
+        joint_rotations_series = self._refine_person_rotations(
+            series["joint_rotations"], profile_changes, bone_changes, profile_spike_counts
+        )
+        base_rotations_series = self._refine_base_rotations(
+            series["root_rotations"], profile_changes, bone_changes, profile_spike_counts
+        )
+        base_translations_series = self._refine_base_translations(
+            series["root_translations"], profile_vector_changes, bone_vector_changes
+        )
+        joint_coords_series = self._refine_joint_coords(
+            series["joint_coords"], profile_vector_changes, bone_vector_changes
+        )
+        keypoints_3d_series = self._refine_keypoints(
+            series["keypoints_3d"], profile_vector_changes, bone_vector_changes
+        )
+
+        base_translations_series, base_rotations_series = self._apply_base_motion_adjustments(
+            base_rotations_series,
+            base_translations_series,
+            joint_coords_series,
+            log_print,
+        )
+
+        person_logs = None
+        if collect_refinement_logs:
+            person_logs = self._build_person_refinement_logs(
+                series_to_frame_map,
+                orig_series,
+                joint_rotations_series,
+                base_rotations_series,
+                base_translations_series,
+                joint_coords_series,
+            )
+
+        self._write_refined_person_frames(
+            person_id,
+            estimation_results,
+            refined_results,
+            series_to_frame_map,
+            original_frame_indices,
+            template_person_data,
+            joint_rotations_series,
+            base_rotations_series,
+            base_translations_series,
+            joint_coords_series,
+            keypoints_3d_series,
+        )
+
+        return person_logs
+
+    def apply(self, estimation_results: Dict[str, Dict[str, Any]],
+             progress_callback: Optional[callable] = None,
+             collect_refinement_logs: bool = False) -> Dict[str, Dict[str, Any]]:
         """
         Apply refinement directly to estimation results (before joint mapping).
         
@@ -631,21 +1350,14 @@ class RefinementManager:
         Returns:
             Refined estimation results in the same format
         """
+        self.last_refinement_logs = None
         if self.config is None:
             print("RefinementManager.apply(): config is None, skipping refinement")
             return estimation_results
-        
-        # Early return if all refinement features are disabled
-        has_enabled_features = (
-            self.config.do_spike_fix or 
-            self.config.do_rotation_smoothing or 
-            self.config.do_vector_smoothing or 
-            self.config.do_root_motion_fix or 
-            self.config.do_foot_planting or
-            self.config.do_interpolate_missing_keyframes
-        )
-        
-        print(f"RefinementManager.apply(): config exists, checking enabled features...")
+
+        has_enabled_features = self._has_enabled_features()
+
+        print("RefinementManager.apply(): config exists, checking enabled features...")
         print(f"  do_spike_fix: {self.config.do_spike_fix}")
         print(f"  do_rotation_smoothing: {self.config.do_rotation_smoothing}")
         print(f"  do_vector_smoothing: {self.config.do_vector_smoothing}")
@@ -653,516 +1365,82 @@ class RefinementManager:
         print(f"  do_foot_planting: {self.config.do_foot_planting}")
         print(f"  do_interpolate_missing_keyframes: {self.config.do_interpolate_missing_keyframes}")
         print(f"  has_enabled_features: {has_enabled_features}")
-        
+
         if not has_enabled_features:
             print("RefinementManager.apply(): All refinement features are disabled, skipping refinement")
             return estimation_results
-        
+
         translator = Translator(self.lang)
         print("RefinementManager.apply(): Proceeding with refinement...")
         if progress_callback:
             progress_callback(0.0, translator.t("progress.applying_refinement"))
-        
-        # Setup logging
+
         log_file, log_path = self._setup_refinement_log()
-        
-        def log_print(msg):
-            print(msg)
-            log_file.write(msg + '\n')
-            log_file.flush()
-        
+        log_print = functools.partial(self._log_print, log_file)
+        refinement_logs = {"persons": {}} if collect_refinement_logs else None
+
         try:
-            log_print("\n" + "="*80)
-            log_print("REFINEMENT PROCESS")
-            log_print("="*80)
-            log_print(f"Log file: {log_path}")
-            log_print(f"Frames: {len(sorted([int(k) for k in estimation_results.keys()]))}")
-            log_print(f"Enabled features:")
-            log_print(f"  - Spike fix: {self.config.do_spike_fix}")
-            log_print(f"  - Rotation smoothing: {self.config.do_rotation_smoothing}")
-            log_print(f"  - Vector smoothing: {self.config.do_vector_smoothing}")
-            log_print(f"  - Root motion fix: {self.config.do_root_motion_fix}")
-            log_print(f"  - Foot planting: {self.config.do_foot_planting}")
-            log_print(f"  - Interpolate missing: {self.config.do_interpolate_missing_keyframes}")
-            log_print("="*80 + "\n")
-            
-            # Track changes per profile and per bone for summary
-            profile_changes = {}  # {profile_name: [list of changes in degrees]}
-            bone_changes = {}  # {bone_name: change in degrees}
-            profile_vector_changes = {}  # {profile_name: [list of vector adjustment percentages]}
-            bone_vector_changes = {}  # {bone_name: vector adjustment percentage}
-            profile_spike_counts = {}  # {profile_name: (spike_count, total_frames)}
-            
-            # Get all person IDs across all frames
-            all_person_ids = set()
-            for frame_data in estimation_results.values():
-                for person_id in frame_data.keys():
-                    all_person_ids.add(person_id)
-            
-            # Get all frame indices sorted
-            frame_indices = sorted([int(k) for k in estimation_results.keys()])
-            num_frames = len(frame_indices)
-            
-            if num_frames == 0:
+            self._log_refinement_start(log_print, log_path, estimation_results)
+
+            tracking = self._init_refinement_tracking()
+            profile_changes = tracking["profile_changes"]
+            bone_changes = tracking["bone_changes"]
+            profile_vector_changes = tracking["profile_vector_changes"]
+            bone_vector_changes = tracking["bone_vector_changes"]
+            profile_spike_counts = tracking["profile_spike_counts"]
+
+            all_person_ids, frame_indices = self._collect_person_ids_and_frames(estimation_results)
+            if not frame_indices:
                 return estimation_results
-            
-            # Start with a deep copy of all original results to preserve structure
-            refined_results = {}
-            for frame_key, frame_data in estimation_results.items():
-                refined_results[frame_key] = {}
-                for person_id_str, person_data in frame_data.items():
-                    refined_results[frame_key][person_id_str] = person_data.copy()
-            
-            # Process each person separately
+
+            refined_results = self._init_refined_results(estimation_results)
+
             for person_index, person_id in enumerate(all_person_ids):
                 if progress_callback:
                     progress = person_index / len(all_person_ids)
-                    progress_callback(progress, translator.t("progress.refining_person", person_index=person_index + 1, total_people=len(all_person_ids)))
-                
-                # Collect data for this person across all frames
-                joint_rotations_series = []  # [T][num_joints][3][3]
-                root_rotations_series = []    # [T][3][3]
-                root_translations_series = [] # [T][3]
-                joint_coords_series = []      # [T][num_joints][3] (for foot planting if needed)
-                keypoints_3d_series = []      # [T][num_keypoints][3]
-                
-                # Find first valid frame for this person to use as template for missing frames
-                template_person_data = None
-                for frame_idx in frame_indices:
-                    frame_key = str(frame_idx)
-                    frame_data = estimation_results.get(frame_key, {})
-                    person_data = frame_data.get(str(person_id))
-                    if person_data is not None:
-                        template_person_data = person_data
-                        break
-                
-                # Track which frames originally had this person and map series indices to frame indices
-                original_frame_indices = set()
-                series_to_frame_map = []  # Maps series index -> frame index
-                
-                # First pass: collect all data
-                for frame_idx in frame_indices:
-                    frame_key = str(frame_idx)
-                    frame_data = estimation_results.get(frame_key, {})
-                    person_data = frame_data.get(str(person_id))
-                    
-                    if person_data is None:
-                        # Missing frame - add None placeholders only if interpolation is enabled
-                        # Otherwise, skip this frame entirely for this person
-                        if self.config.do_interpolate_missing_keyframes:
-                            joint_rotations_series.append(None)
-                            root_rotations_series.append(None)
-                            root_translations_series.append(None)
-                            joint_coords_series.append(None)
-                            keypoints_3d_series.append(None)
-                            series_to_frame_map.append(frame_idx)
-                        # Don't track as original frame
-                        continue
-                    
-                    # Track that this person existed in the original data for this frame
-                    original_frame_indices.add(frame_idx)
-                    series_to_frame_map.append(frame_idx)
-                    
-                    # Extract data
-                    pred_global_rots = person_data.get("pred_global_rots")
-                    global_rot = person_data.get("global_rot")
-                    pred_cam_t = person_data.get("pred_cam_t")
-                    pred_joint_coords = person_data.get("pred_joint_coords")
-                    pred_keypoints_3d = person_data.get("pred_keypoints_3d")
-                    
-                    # Convert to lists if numpy arrays
-                    if pred_global_rots is not None:
-                        if hasattr(pred_global_rots, 'tolist'):
-                            pred_global_rots = pred_global_rots.tolist()
-                        joint_rotations_series.append(pred_global_rots)
-                    else:
-                        joint_rotations_series.append(None)
-                    
-                    if global_rot is not None:
-                        if hasattr(global_rot, 'tolist'):
-                            global_rot = global_rot.tolist()
-                        root_rotations_series.append(global_rot)
-                    else:
-                        root_rotations_series.append(None)
-                    
-                    if pred_cam_t is not None:
-                        if hasattr(pred_cam_t, 'tolist'):
-                            pred_cam_t = pred_cam_t.tolist()
-                        root_translations_series.append(pred_cam_t)
-                    else:
-                        root_translations_series.append(None)
-                    
-                    if pred_joint_coords is not None:
-                        if hasattr(pred_joint_coords, 'tolist'):
-                            pred_joint_coords = pred_joint_coords.tolist()
-                        joint_coords_series.append(pred_joint_coords)
-                    else:
-                        joint_coords_series.append(None)
-                    
-                    if pred_keypoints_3d is not None:
-                        if hasattr(pred_keypoints_3d, 'tolist'):
-                            pred_keypoints_3d = pred_keypoints_3d.tolist()
-                        keypoints_3d_series.append(pred_keypoints_3d)
-                    else:
-                        keypoints_3d_series.append(None)
-                
-                # Refine joint rotations (each joint separately)
-                if joint_rotations_series and any(x is not None for x in joint_rotations_series):
-                    # Get number of joints from first non-None frame
-                    num_joints = None
-                    for rot_frame in joint_rotations_series:
-                        if rot_frame is not None:
-                            num_joints = len(rot_frame)
-                            break
-                    
-                    if num_joints is not None:
-                        # Refine each joint separately
-                        refined_joint_rots = []
-                        for joint_idx in range(num_joints):
-                            # Extract rotation series for this joint: [T][3][3]
-                            joint_rot_series = []
-                            for t in range(len(joint_rotations_series)):
-                                if joint_rotations_series[t] is not None and joint_idx < len(joint_rotations_series[t]):
-                                    joint_rot = joint_rotations_series[t][joint_idx]
-                                    # Parse rotation matrix to ensure it's in 3x3 format
-                                    parsed = self._parse_rotation_matrix(joint_rot)
-                                    joint_rot_series.append(parsed if parsed is not None else self._identity_matrix())
-                                else:
-                                    joint_rot_series.append(None)
-                            
-                            # Refine this joint's rotation series
-                            # Get the appropriate profile for this bone using pattern matching
-                            bone_name = JOINT_NAMES[joint_idx]
-                            prof = self._profile_for(bone_name)
-                            profile_name = self._profile_name_for(bone_name)
-                            refined_joint_rot = self._process_rotation_series(
-                                joint_rot_series, 
-                                prof,
-                                bone_name=bone_name,
-                                profile_name=profile_name,
-                                profile_changes=profile_changes,
-                                bone_changes=bone_changes,
-                                profile_spike_counts=profile_spike_counts
-                            )
-                            refined_joint_rots.append(refined_joint_rot)
-                        
-                        # Reorganize: [num_joints][T][3][3] -> [T][num_joints][3][3]
-                        joint_rotations_series = []
-                        series_length = len(refined_joint_rots[0]) if refined_joint_rots and refined_joint_rots[0] else 0
-                        for t in range(series_length):
-                            frame_joint_rots = []
-                            for joint_idx in range(num_joints):
-                                frame_joint_rots.append(refined_joint_rots[joint_idx][t])
-                            joint_rotations_series.append(frame_joint_rots)
-                
-                # Refine root rotation
-                if root_rotations_series and any(x is not None for x in root_rotations_series):
-                    # Parse rotation matrices to ensure they're in 3x3 format
-                    parsed_root_rotations = []
-                    for rot in root_rotations_series:
-                        if rot is None:
-                            parsed_root_rotations.append(None)
-                        else:
-                            parsed = self._parse_rotation_matrix(rot)
-                            parsed_root_rotations.append(parsed if parsed is not None else self._identity_matrix())
-                    
-                    prof = self.config.profiles.get("root", self.config.profiles.get("*"))
-                    root_rotations_series = self._process_rotation_series(
-                        parsed_root_rotations,
-                        prof,
-                        bone_name="root_rotation",
-                        profile_name="ROOT",
-                        profile_changes=profile_changes,
-                        bone_changes=bone_changes,
-                        profile_spike_counts=profile_spike_counts
+                    progress_callback(
+                        progress,
+                        translator.t(
+                            "progress.refining_person",
+                            person_index=person_index + 1,
+                            total_people=len(all_person_ids),
+                        ),
                     )
-                
-                # Refine root translation
-                if root_translations_series and any(x is not None for x in root_translations_series):
-                    prof = self.config.profiles.get("root", self.config.profiles.get("*"))
-                    root_translations_series = self._process_vector_series(
-                        root_translations_series,
-                        prof,
-                        bone_name="root_translation",
-                        profile_name="ROOT",
-                        profile_vector_changes=profile_vector_changes,
-                        bone_vector_changes=bone_vector_changes
-                    )
-                
-                # Refine joint coordinates (each joint separately) - CRITICAL for foot planting velocity calculations
-                if joint_coords_series and any(x is not None for x in joint_coords_series):
-                    # Get number of joints from first non-None frame
-                    num_joints = None
-                    for coords_frame in joint_coords_series:
-                        if coords_frame is not None:
-                            num_joints = len(coords_frame)
-                            break
-                    
-                    if num_joints is not None:
-                        # Refine each joint separately
-                        refined_joint_coords = []
-                        for joint_idx in range(num_joints):
-                            # Extract coordinate series for this joint: [T][3]
-                            joint_coord_series = []
-                            for t in range(len(joint_coords_series)):
-                                if joint_coords_series[t] is not None and joint_idx < len(joint_coords_series[t]):
-                                    joint_coord = joint_coords_series[t][joint_idx]
-                                    # Ensure it's a 3D vector
-                                    if isinstance(joint_coord, (list, tuple)) and len(joint_coord) >= 3:
-                                        joint_coord_series.append(list(joint_coord[:3]))
-                                    else:
-                                        joint_coord_series.append([0.0, 0.0, 0.0])
-                                else:
-                                    joint_coord_series.append(None)
-                            
-                            # Refine this joint's coordinate series using the same profile as rotations
-                            bone_name = JOINT_NAMES[joint_idx] if joint_idx < len(JOINT_NAMES) else f"joint_{joint_idx}"
-                            prof = self._profile_for(bone_name)
-                            profile_name = self._profile_name_for(bone_name)
-                            refined_joint_coord = self._process_vector_series(
-                                joint_coord_series,
-                                prof,
-                                bone_name=bone_name,
-                                profile_name=profile_name,
-                                profile_vector_changes=profile_vector_changes,
-                                bone_vector_changes=bone_vector_changes
-                            )
-                            refined_joint_coords.append(refined_joint_coord)
-                        
-                        # Reorganize: [num_joints][T][3] -> [T][num_joints][3]
-                        joint_coords_series = []
-                        series_length = len(refined_joint_coords[0]) if refined_joint_coords and refined_joint_coords[0] else 0
-                        for t in range(series_length):
-                            frame_joint_coords = []
-                            for joint_idx in range(num_joints):
-                                frame_joint_coords.append(refined_joint_coords[joint_idx][t])
-                            joint_coords_series.append(frame_joint_coords)
-                
-                # Refine keypoints_3d (each keypoint separately) - CRITICAL for keypoint-based mappings like Mixamo
-                if keypoints_3d_series and any(x is not None for x in keypoints_3d_series):
-                    # Get number of keypoints from first non-None frame
-                    num_keypoints = None
-                    for kp_frame in keypoints_3d_series:
-                        if kp_frame is not None:
-                            num_keypoints = len(kp_frame)
-                            break
-                    
-                    if num_keypoints is not None:
-                        # Refine each keypoint separately
-                        refined_keypoints_3d = []
-                        for kp_idx in range(num_keypoints):
-                            # Extract keypoint series for this keypoint: [T][3]
-                            kp_series = []
-                            for t in range(len(keypoints_3d_series)):
-                                if keypoints_3d_series[t] is not None and kp_idx < len(keypoints_3d_series[t]):
-                                    kp = keypoints_3d_series[t][kp_idx]
-                                    # Ensure it's a 3D vector
-                                    if isinstance(kp, (list, tuple)) and len(kp) >= 3:
-                                        kp_series.append(list(kp[:3]))
-                                    else:
-                                        kp_series.append([0.0, 0.0, 0.0])
-                                else:
-                                    kp_series.append(None)
-                            
-                            # Refine this keypoint's series using the same profile as joint coords
-                            bone_name = f"keypoint_{kp_idx}"
-                            prof = self.config.profiles.get("*", self.config.profiles.get("root"))
-                            profile_name = "DEFAULT"  # Keypoints use default profile
-                            refined_kp = self._process_vector_series(
-                                kp_series,
-                                prof,
-                                bone_name=bone_name,
-                                profile_name=profile_name,
-                                profile_vector_changes=profile_vector_changes,
-                                bone_vector_changes=bone_vector_changes
-                            )
-                            refined_keypoints_3d.append(refined_kp)
-                        
-                        # Reorganize: [num_keypoints][T][3] -> [T][num_keypoints][3]
-                        keypoints_3d_series = []
-                        series_length = len(refined_keypoints_3d[0]) if refined_keypoints_3d and refined_keypoints_3d[0] else 0
-                        for t in range(series_length):
-                            frame_keypoints = []
-                            for kp_idx in range(num_keypoints):
-                                frame_keypoints.append(refined_keypoints_3d[kp_idx][t])
-                            keypoints_3d_series.append(frame_keypoints)
-                
-                # Apply root motion stabilization (combines rotation and translation)
-                if self.config.do_root_motion_fix and root_rotations_series and root_translations_series:
-                    log_print("\n" + "="*80)
-                    log_print("ROOT MOTION STABILIZATION")
-                    log_print("="*80)
-                    root_motion_dict = {
-                        "translation": root_translations_series,
-                        "rotation": root_rotations_series
-                    }
-                    root_motion_dict = self._root_stabilization(root_motion_dict, log_print)
-                    root_translations_series = root_motion_dict["translation"]
-                    root_rotations_series = root_motion_dict["rotation"]
-                    log_print("="*80 + "\n")
-                
-                # Apply foot planting after root stabilization
-                if self.config.do_foot_planting and root_rotations_series and root_translations_series and joint_coords_series:
-                    root_motion_dict = {
-                        "translation": root_translations_series,
-                        "rotation": root_rotations_series
-                    }
-                    root_motion_dict = self._foot_planting_adjustment(root_motion_dict, joint_coords_series, log_print)
-                    root_translations_series = root_motion_dict["translation"]
-                    root_rotations_series = root_motion_dict["rotation"]
-                
-                # Store refined data back into results
-                # Only write to frames where person originally existed, OR where interpolation successfully filled in values
-                for series_idx, frame_idx in enumerate(series_to_frame_map):
-                    frame_key = str(frame_idx)
-                    
-                    # Check if this person existed in the original data for this frame
-                    was_original = frame_idx in original_frame_indices
-                    
-                    # If interpolation is enabled, check if we have valid interpolated data for this frame
-                    has_interpolated_data = False
-                    if self.config.do_interpolate_missing_keyframes and not was_original:
-                        # Check if interpolation successfully filled in this frame
-                        if (series_idx < len(joint_rotations_series) and joint_rotations_series[series_idx] is not None and
-                            series_idx < len(keypoints_3d_series) and keypoints_3d_series[series_idx] is not None):
-                            has_interpolated_data = True
-                    
-                    # Only process if person existed originally OR we have valid interpolated data
-                    if not was_original and not has_interpolated_data:
-                        # Skip this frame - person didn't exist and interpolation didn't fill it in
-                        continue
-                    
-                    # Get or create frame entry
-                    if frame_key not in refined_results:
-                        refined_results[frame_key] = {}
-                    
-                    # Get or create person entry
-                    if str(person_id) not in refined_results[frame_key]:
-                        if was_original:
-                            # Should already exist from initial copy, but handle edge case
-                            original_data = estimation_results.get(frame_key, {}).get(str(person_id))
-                            if original_data:
-                                refined_results[frame_key][str(person_id)] = original_data.copy()
-                            else:
-                                continue
-                        elif has_interpolated_data and template_person_data is not None:
-                            # Create new entry for interpolated frame
-                            refined_person_data = template_person_data.copy()
-                            # Will be filled in below
-                            refined_results[frame_key][str(person_id)] = refined_person_data
-                        else:
-                            continue
-                    
-                    refined_person_data = refined_results[frame_key][str(person_id)]
-                    
-                    # Update with refined values (only if we have valid data)
-                    if series_idx < len(joint_rotations_series) and joint_rotations_series[series_idx] is not None:
-                        refined_person_data["pred_global_rots"] = joint_rotations_series[series_idx]
-                    
-                    if series_idx < len(root_rotations_series) and root_rotations_series[series_idx] is not None:
-                        refined_person_data["global_rot"] = root_rotations_series[series_idx]
-                    
-                    if series_idx < len(root_translations_series) and root_translations_series[series_idx] is not None:
-                        refined_person_data["pred_cam_t"] = root_translations_series[series_idx]
-                    
-                    if series_idx < len(joint_coords_series) and joint_coords_series[series_idx] is not None:
-                        refined_person_data["pred_joint_coords"] = joint_coords_series[series_idx]
-                    
-                    if series_idx < len(keypoints_3d_series) and keypoints_3d_series[series_idx] is not None:
-                        refined_person_data["pred_keypoints_3d"] = keypoints_3d_series[series_idx]
-                    
-                    # Validate that we have all required data - if not, remove this entry
-                    if (refined_person_data.get("pred_joint_coords") is None or 
-                        refined_person_data.get("pred_global_rots") is None or 
-                        refined_person_data.get("pred_keypoints_3d") is None):
-                        # Missing required data - remove this entry to restore original state
-                        if not was_original:
-                            # Only remove if it wasn't in original (interpolation failed)
-                            del refined_results[frame_key][str(person_id)]
-                            # Clean up empty frame dict
-                            if not refined_results[frame_key]:
-                                del refined_results[frame_key]
-            
+
+                person_logs = self._refine_person(
+                    person_id,
+                    estimation_results,
+                    frame_indices,
+                    refined_results,
+                    profile_changes,
+                    bone_changes,
+                    profile_vector_changes,
+                    bone_vector_changes,
+                    profile_spike_counts,
+                    collect_refinement_logs,
+                    log_print,
+                )
+
+                if collect_refinement_logs and person_logs is not None:
+                    refinement_logs["persons"][str(person_id)] = person_logs
+
             if progress_callback:
                 progress_callback(1.0, translator.t("progress.refinement_complete"))
-            
-            # Print refinement summary
-            log_print("\n" + "="*80)
-            log_print("REFINEMENT SUMMARY")
-            log_print("="*80)
-            
-            if profile_changes or profile_vector_changes or profile_spike_counts:
-                log_print("\nGeneral refinement:")
-                
-                # Calculate rotation averages per profile
-                profile_rotation_averages = {}
-                for profile_name, changes in profile_changes.items():
-                    if changes:
-                        profile_rotation_averages[profile_name] = sum(changes) / len(changes)
-                
-                # Calculate vector averages per profile
-                profile_vector_averages = {}
-                for profile_name, changes in profile_vector_changes.items():
-                    if changes:
-                        profile_vector_averages[profile_name] = sum(changes) / len(changes)
-                
-                # Print summary for each profile
-                profile_order = ["ARMS", "LEGS", "HANDS", "FINGERS", "HEAD", "ROOT", "DEFAULT"]
-                for profile_name in profile_order:
-                    rotation_avg = profile_rotation_averages.get(profile_name)
-                    vector_avg = profile_vector_averages.get(profile_name)
-                    spike_info = profile_spike_counts.get(profile_name)
-                    
-                    if rotation_avg is not None or vector_avg is not None or spike_info is not None:
-                        parts = []
-                        if rotation_avg is not None:
-                            parts.append(f"Rotation {rotation_avg:.1f}°")
-                        if vector_avg is not None:
-                            parts.append(f"Vector {vector_avg:.1f}% (avg adjusted)")
-                        if spike_info is not None:
-                            spike_count, total_frames = spike_info
-                            spike_pct = (spike_count / total_frames * 100.0) if total_frames > 0 else 0.0
-                            parts.append(f"{spike_count} Spikes ({spike_pct:.1f}%)")
-                        log_print(f"{profile_name}: {' | '.join(parts)}")
-                
-                # Find bones with abnormal changes (>30 degrees)
-                high_change_bones = []
-                increasing_bones = []
-                
-                for bone_name, change_deg in bone_changes.items():
-                    if change_deg > self.HIGH_CHANGE_THRESHOLD_DEG:
-                        high_change_bones.append((bone_name, change_deg))
-                    
-                    # Check if bone's change is significantly higher than its profile average (indicating increasing trend)
-                    bone_profile = self._profile_name_for(bone_name)
-                    if bone_profile in profile_rotation_averages:
-                        profile_avg = profile_rotation_averages[bone_profile]
-                        # If bone change is more than 2x the profile average, it's likely increasing
-                        if change_deg > profile_avg * 2.0 and change_deg > 10.0:
-                            increasing_bones.append((bone_name, change_deg))
-                
-                # Sort by change amount (descending)
-                high_change_bones.sort(key=lambda x: x[1], reverse=True)
-                increasing_bones.sort(key=lambda x: x[1], reverse=True)
-                
-                # Print warnings for problematic bones
-                if increasing_bones:
-                    bone_names = [bone[0] for bone in increasing_bones]
-                    log_print(f"\nWarning - The following bones had an increasing average degree modification. Refinement may be too aggressive: {bone_names}")
-                
-                if high_change_bones:
-                    bone_names = [bone[0] for bone in high_change_bones]
-                    log_print(f"Warning - The following bones had a very high (>{self.HIGH_CHANGE_THRESHOLD_DEG:.0f}°) average modification. Refinement may be too aggressive: {bone_names}")
-            else:
-                log_print("\nNo rotation changes tracked.")
-            
-            log_print("\n" + "="*80)
-            log_print("REFINEMENT PROCESS - COMPLETE")
-            log_print("="*80 + "\n")
-            
+
+            self._log_refinement_summary(
+                log_print,
+                profile_changes,
+                profile_vector_changes,
+                profile_spike_counts,
+                bone_changes,
+            )
+
+            if collect_refinement_logs:
+                self.last_refinement_logs = refinement_logs
+
         finally:
             log_file.close()
-        
+
         return refined_results
 
     def _interpolate_missing_frames(self, series, is_rotation=False):
@@ -1205,73 +1483,37 @@ class RefinementManager:
         # Find sequences of None values and interpolate
         i = 0
         while i < T:
-            if result[i] is None:
-                # Find the start of this None sequence
-                start_none = i
-                # Find the end of this None sequence
-                while i < T and result[i] is None:
-                    i += 1
-                end_none = i
-                
-                # Find the last valid frame before this sequence
-                prev_valid_idx = None
-                for j in range(start_none - 1, -1, -1):
-                    if result[j] is not None:
-                        prev_valid_idx = j
-                        break
-                
-                # Find the first valid frame after this sequence
-                next_valid_idx = None
-                for j in range(end_none, T):
-                    if result[j] is not None:
-                        next_valid_idx = j
-                        break
-                
-                # Interpolate each None in the sequence
-                if prev_valid_idx is not None and next_valid_idx is not None:
-                    # We have both previous and next valid frames
-                    prev_value = result[prev_valid_idx]
-                    next_value = result[next_valid_idx]
-                    
-                    for j in range(start_none, end_none):
-                        # Calculate interpolation parameter
-                        # t = 0 at prev_valid_idx, t = 1 at next_valid_idx
-                        t = (j - prev_valid_idx) / (next_valid_idx - prev_valid_idx)
-                        
-                        if is_rotation:
-                            # Convert matrices to quaternions, slerp, convert back
-                            q1 = quat_from_R(prev_value)
-                            q2 = quat_from_R(next_value)
-                            q_interp = slerp(q1, q2, t)
-                            result[j] = R_from_quat(q_interp)
-                        else:
-                            # Linear interpolation for vectors
-                            result[j] = [
-                                prev_value[k] + t * (next_value[k] - prev_value[k])
-                                for k in range(3)
-                            ]
-                elif prev_valid_idx is not None:
-                    # Only previous valid frame (None at end)
-                    prev_value = result[prev_valid_idx]
-                    for j in range(start_none, end_none):
-                        if is_rotation:
-                            # Deep copy rotation matrix
-                            result[j] = [[prev_value[k][l] for l in range(3)] for k in range(3)]
-                        else:
-                            # Deep copy vector
-                            result[j] = list(prev_value)
-                elif next_valid_idx is not None:
-                    # Only next valid frame (None at start)
-                    next_value = result[next_valid_idx]
-                    for j in range(start_none, end_none):
-                        if is_rotation:
-                            # Deep copy rotation matrix
-                            result[j] = [[next_value[k][l] for l in range(3)] for k in range(3)]
-                        else:
-                            # Deep copy vector
-                            result[j] = list(next_value)
-            else:
+            if result[i] is not None:
                 i += 1
+                continue
+
+            start_none = i
+            while i < T and result[i] is None:
+                i += 1
+            end_none = i
+
+            prev_valid_idx = self._find_prev_valid_index(result, start_none - 1)
+            next_valid_idx = self._find_next_valid_index(result, end_none)
+
+            if prev_valid_idx is None and next_valid_idx is None:
+                continue
+
+            if prev_valid_idx is not None and next_valid_idx is not None:
+                prev_value = result[prev_valid_idx]
+                next_value = result[next_valid_idx]
+                denom = (next_valid_idx - prev_valid_idx)
+                for j in range(start_none, end_none):
+                    t = (j - prev_valid_idx) / denom
+                    result[j] = self._interpolate_value(prev_value, next_value, t, is_rotation)
+                continue
+
+            if prev_valid_idx is not None:
+                prev_value = result[prev_valid_idx]
+                self._fill_range_with_value(result, start_none, end_none, prev_value, is_rotation)
+                continue
+
+            next_value = result[next_valid_idx]
+            self._fill_range_with_value(result, start_none, end_none, next_value, is_rotation)
         
         return result
 
@@ -1333,11 +1575,7 @@ class RefinementManager:
             if result[i] is not None:
                 last_valid = result[i]
             else:
-                # Copy previous valid value
-                if is_rotation:
-                    result[i] = [[last_valid[k][l] for l in range(3)] for k in range(3)]
-                else:
-                    result[i] = list(last_valid)
+                result[i] = self._copy_value(last_valid, is_rotation)
         
         return result
 
@@ -1610,7 +1848,140 @@ class RefinementManager:
         # Use search() instead of match() to allow matching anywhere in the string
         return regex.search(bone_name) is not None
 
-    def _root_stabilization(self, root_motion, log_print):
+    def _prepare_base_translation(self, trans, log_print):
+        if trans is None:
+            log_print("WARNING: root_motion['translation'] is None, skipping stabilization")
+            return None
+        if self.config.do_interpolate_missing_keyframes:
+            trans = self._interpolate_missing_frames(trans, is_rotation=False)
+        elif any(t is None for t in trans):
+            log_print(
+                "WARNING: Missing keyframes detected in root translation, skipping stabilization "
+                "(enable 'Interpolate Missing Keyframes' to interpolate)"
+            )
+            return None
+        if any(t is None for t in trans):
+            log_print(
+                "WARNING: None values still present in root translation after interpolation check, "
+                "skipping stabilization"
+            )
+            return None
+        return trans
+
+    def _filter_base_translation(self, trans, prof):
+        T = len(trans)
+        if T == 0:
+            return trans
+
+        if prof.method == "one_euro":
+            filter_x = OneEuroFilter(
+                min_cutoff=prof.root_cutoff_xy_hz,
+                beta=prof.one_euro_beta,
+                d_cutoff=prof.one_euro_d_cutoff,
+                dt=self.dt
+            )
+            filter_y = OneEuroFilter(
+                min_cutoff=prof.root_cutoff_xy_hz,
+                beta=prof.one_euro_beta,
+                d_cutoff=prof.one_euro_d_cutoff,
+                dt=self.dt
+            )
+            filter_z = OneEuroFilter(
+                min_cutoff=prof.root_cutoff_z_hz,
+                beta=prof.one_euro_beta,
+                d_cutoff=prof.one_euro_d_cutoff,
+                dt=self.dt
+            )
+            filtered_trans = []
+            for t in range(T):
+                filtered_trans.append([
+                    filter_x(trans[t][0]),
+                    filter_y(trans[t][1]),
+                    filter_z(trans[t][2])
+                ])
+            return filtered_trans
+
+        if prof.method == "ema":
+            x_series = [trans[t][0] for t in range(T)]
+            y_series = [trans[t][1] for t in range(T)]
+            z_series = [trans[t][2] for t in range(T)]
+
+            alpha_xy = 1.0 - math.exp(-2.0 * math.pi * prof.root_cutoff_xy_hz * self.dt)
+            alpha_z = 1.0 - math.exp(-2.0 * math.pi * prof.root_cutoff_z_hz * self.dt)
+
+            filtered_x = [x_series[0]]
+            filtered_y = [y_series[0]]
+            filtered_z = [z_series[0]]
+
+            for t in range(1, T):
+                filtered_x.append(filtered_x[t-1] + alpha_xy * (x_series[t] - filtered_x[t-1]))
+                filtered_y.append(filtered_y[t-1] + alpha_xy * (y_series[t] - filtered_y[t-1]))
+                filtered_z.append(filtered_z[t-1] + alpha_z * (z_series[t] - filtered_z[t-1]))
+
+            filtered_trans = []
+            for t in range(T):
+                filtered_trans.append([
+                    filtered_x[t],
+                    filtered_y[t],
+                    filtered_z[t]
+                ])
+            return filtered_trans
+
+        return self._process_vector_series(trans, prof, processing_island=False)
+
+    def _stabilize_base_translation(self, trans, prof, log_print):
+        prepared = self._prepare_base_translation(trans, log_print)
+        if prepared is None:
+            return None, None
+        trans_original = [[t[i] for i in range(3)] for t in prepared]
+        filtered = self._filter_base_translation(prepared, prof)
+        return filtered, trans_original
+
+    def _stabilize_base_rotation(self, rot, prof, log_print):
+        if rot is None:
+            log_print("WARNING: root_motion['rotation'] is None, skipping stabilization")
+            return None, None
+        rot_original = self._deep_copy_rotation_series(rot)
+        stabilized = self._process_rotation_series(rot, prof, bone_name=None)
+        return stabilized, rot_original
+
+    def _prepare_base_motion_for_foot_planting(self, root_motion, log_print):
+        # Handle None values: interpolate if enabled, otherwise forward-fill.
+        if self.config.do_interpolate_missing_keyframes:
+            if any(t is None for t in root_motion["translation"]):
+                root_motion["translation"] = self._interpolate_missing_frames(
+                    root_motion["translation"],
+                    is_rotation=False,
+                )
+            if "rotation" in root_motion and root_motion["rotation"] is not None:
+                if any(r is None for r in root_motion["rotation"]):
+                    root_motion["rotation"] = self._interpolate_missing_frames(
+                        root_motion["rotation"],
+                        is_rotation=True,
+                    )
+            if any(t is None for t in root_motion["translation"]):
+                return root_motion, False
+            if "rotation" in root_motion and root_motion["rotation"] is not None:
+                if any(r is None for r in root_motion["rotation"]):
+                    return root_motion, False
+            return root_motion, True
+
+        filled_trans = self._fill_none_values(root_motion["translation"], is_rotation=False)
+        if filled_trans is None:
+            log_print("WARNING: No valid translation frames found, skipping foot planting")
+            return root_motion, False
+        root_motion["translation"] = filled_trans
+
+        if "rotation" in root_motion and root_motion["rotation"] is not None:
+            filled_rot = self._fill_none_values(root_motion["rotation"], is_rotation=True)
+            if filled_rot is None:
+                log_print("WARNING: No valid rotation frames found, skipping foot planting")
+                return root_motion, False
+            root_motion["rotation"] = filled_rot
+
+        return root_motion, True
+
+    def _base_stabilization(self, root_motion, log_print):
         """
         Stabilize root motion to reduce jitter and unwanted movement.
         root_motion: dict with keys like "translation" [T][3] and "rotation" [T][3][3]
@@ -1622,129 +1993,31 @@ class RefinementManager:
         prof = self.config.profiles.get("root", self.config.profiles["*"])
         stabilized = {}
         
-        # Stabilize translation (position)
         if "translation" in root_motion:
-            trans = root_motion["translation"]  # [T][3]
-            if trans is None:
-                log_print("WARNING: root_motion['translation'] is None, skipping stabilization")
-            else:
-                # CRITICAL: Interpolation must happen FIRST, before any other processing
-                if self.config.do_interpolate_missing_keyframes:
-                    # Interpolate missing frames before processing
-                    trans = self._interpolate_missing_frames(trans, is_rotation=False)
-                else:
-                    # Check for None values and skip if found (matching _process_vector_series behavior)
-                    if any(t is None for t in trans):
-                        log_print("WARNING: Missing keyframes detected in root translation, skipping stabilization (enable 'Interpolate Missing Keyframes' to interpolate)")
-                        trans = None
-                
-                # Defensive check: ensure no None values remain before processing
-                if trans is not None and any(t is None for t in trans):
-                    log_print("WARNING: None values still present in root translation after interpolation check, skipping stabilization")
-                    trans = None
-                
-                if trans is not None:
-                    trans_original = [[t[i] for i in range(3)] for t in trans]  # Deep copy for comparison
-                    T = len(trans)
-                    
-                    if T > 0:
-                        # Apply different cutoffs for XY (horizontal) vs Z (vertical)
-                        # For root motion, we want different smoothing for horizontal vs vertical
-                        if prof.method == "one_euro":
-                            # Filter X and Y with horizontal cutoff
-                            filter_x = OneEuroFilter(
-                                min_cutoff=prof.root_cutoff_xy_hz,
-                                beta=prof.one_euro_beta,
-                                d_cutoff=prof.one_euro_d_cutoff,
-                                dt=self.dt
-                            )
-                            filter_y = OneEuroFilter(
-                                min_cutoff=prof.root_cutoff_xy_hz,
-                                beta=prof.one_euro_beta,
-                                d_cutoff=prof.one_euro_d_cutoff,
-                                dt=self.dt
-                            )
-                            # Filter Z with vertical cutoff (typically lower for less jitter)
-                            filter_z = OneEuroFilter(
-                                min_cutoff=prof.root_cutoff_z_hz,
-                                beta=prof.one_euro_beta,
-                                d_cutoff=prof.one_euro_d_cutoff,
-                                dt=self.dt
-                            )
-                            
-                            filtered_trans = []
-                            for t in range(T):
-                                filtered_trans.append([
-                                    filter_x(trans[t][0]),
-                                    filter_y(trans[t][1]),
-                                    filter_z(trans[t][2])
-                                ])
-                            stabilized["translation"] = filtered_trans
-                        elif prof.method == "ema":
-                            # Apply EMA with separate cutoffs for XY vs Z
-                            # Extract components
-                            x_series = [trans[t][0] for t in range(T)]
-                            y_series = [trans[t][1] for t in range(T)]
-                            z_series = [trans[t][2] for t in range(T)]
-                            
-                            # Calculate alpha values for each cutoff
-                            alpha_xy = 1.0 - math.exp(-2.0 * math.pi * prof.root_cutoff_xy_hz * self.dt)
-                            alpha_z = 1.0 - math.exp(-2.0 * math.pi * prof.root_cutoff_z_hz * self.dt)
-                            
-                            # Apply EMA filter to each component separately
-                            filtered_x = [x_series[0]]
-                            filtered_y = [y_series[0]]
-                            filtered_z = [z_series[0]]
-                            
-                            for t in range(1, T):
-                                filtered_x.append(filtered_x[t-1] + alpha_xy * (x_series[t] - filtered_x[t-1]))
-                                filtered_y.append(filtered_y[t-1] + alpha_xy * (y_series[t] - filtered_y[t-1]))
-                                filtered_z.append(filtered_z[t-1] + alpha_z * (z_series[t] - filtered_z[t-1]))
-                            
-                            # Recombine
-                            filtered_trans = []
-                            for t in range(T):
-                                filtered_trans.append([
-                                    filtered_x[t],
-                                    filtered_y[t],
-                                    filtered_z[t]
-                                ])
-                            stabilized["translation"] = filtered_trans
-                        else:
-                            # For other methods, use profile cutoffs (standard processing)
-                            filtered = self._process_vector_series(trans, prof, processing_island=False)
-                            stabilized["translation"] = filtered
-                        
-                        # Calculate and report percentage change for root translation
-                        # Only calculate if result doesn't contain None values (refinement was actually applied)
-                        if stabilized["translation"] is not None and not any(t is None for t in stabilized["translation"]):
-                            change_percent = self._calculate_vector_change_percent(trans_original, stabilized["translation"])
-                            if change_percent > 0.01:  # Only report if there's meaningful change
-                                log_print(f"Root translation adjusted by {change_percent:.2f}%")
+            filtered_trans, trans_original = self._stabilize_base_translation(
+                root_motion["translation"],
+                prof,
+                log_print
+            )
+            if filtered_trans is not None:
+                stabilized["translation"] = filtered_trans
+                if not any(t is None for t in stabilized["translation"]):
+                    change_percent = self._calculate_vector_change_percent(trans_original, stabilized["translation"])
+                    if change_percent > 0.01:
+                        log_print(f"Root translation adjusted by {change_percent:.2f}%")
     
 
-        # Stabilize rotation
         if "rotation" in root_motion:
-            rot = root_motion["rotation"]  # [T][3][3]
-            if rot is None:
-                log_print("WARNING: root_motion['rotation'] is None, skipping stabilization")
-            else:
-                # CRITICAL: Interpolation must happen FIRST, before any other processing
-                # Note: _process_rotation_series handles interpolation, but we need to handle None
-                # values before calling _deep_copy_rotation_series (which handles them gracefully)
-                # For consistency with translation, we'll let _process_rotation_series handle it
-                # since it already has the interpolation logic built in
-                rot_original = self._deep_copy_rotation_series(rot)
-                
-                # Process without bone_name to avoid duplicate message
-                # _process_rotation_series will handle interpolation if enabled
-                stabilized["rotation"] = self._process_rotation_series(rot, prof, bone_name=None)
-                
-                # Calculate and report percentage change for root rotation
-                # Only calculate if result doesn't contain None values (refinement was actually applied)
-                if stabilized["rotation"] is not None and not any(r is None for r in stabilized["rotation"]):
+            stabilized_rot, rot_original = self._stabilize_base_rotation(
+                root_motion["rotation"],
+                prof,
+                log_print
+            )
+            if stabilized_rot is not None:
+                stabilized["rotation"] = stabilized_rot
+                if not any(r is None for r in stabilized["rotation"]):
                     change_deg = self._calculate_rotation_change_percent(rot_original, stabilized["rotation"])
-                    if change_deg > 0.1:  # Only report if there's meaningful change
+                    if change_deg > 0.1:
                         log_print(f"Root rotation adjusted by {change_deg:.2f}° (avg)")
         
         # Copy any other fields
@@ -1780,7 +2053,6 @@ class RefinementManager:
     
     def _get_foot_contact_indices(self, fp_config, log_print):
         """Get joint indices for root and foot contact points."""
-        root_idx = JOINT_NAMES.index("root")
         if fp_config.use_mid_foot:
             l_contact_idx = JOINT_NAMES.index("l_ball")
             r_contact_idx = JOINT_NAMES.index("r_ball")
@@ -1789,22 +2061,15 @@ class RefinementManager:
             l_contact_idx = JOINT_NAMES.index("l_foot")
             r_contact_idx = JOINT_NAMES.index("r_foot")
             log_print(f"Using FOOT: l_foot={l_contact_idx}, r_foot={r_contact_idx}")
-        return root_idx, l_contact_idx, r_contact_idx
+        return l_contact_idx, r_contact_idx
     
-    def _extract_joint_positions(self, joint_coords_series, T, root_idx, l_contact_idx, r_contact_idx):
+    def _extract_joint_positions(self, joint_coords_series, T, l_contact_idx, r_contact_idx):
         """Extract root and foot positions from joint coordinates series."""
-        root_joint_space = []
         left_foot_joint_space = []
         right_foot_joint_space = []
-        
+                
         for t in range(T):
             if t < len(joint_coords_series) and joint_coords_series[t] is not None:
-                # Check and extract root position
-                if root_idx < len(joint_coords_series[t]) and joint_coords_series[t][root_idx] is not None:
-                    root_pos = list(joint_coords_series[t][root_idx][:3])
-                else:
-                    root_pos = [0.0, 0.0, 0.0]
-                
                 # Check and extract left foot position
                 if l_contact_idx < len(joint_coords_series[t]) and joint_coords_series[t][l_contact_idx] is not None:
                     left_pos = list(joint_coords_series[t][l_contact_idx][:3])
@@ -1817,39 +2082,22 @@ class RefinementManager:
                 else:
                     right_pos = [0.0, 0.0, 0.0]
                 
-                root_joint_space.append(root_pos)
                 left_foot_joint_space.append(left_pos)
                 right_foot_joint_space.append(right_pos)
             else:
-                root_joint_space.append([0.0, 0.0, 0.0])
                 left_foot_joint_space.append([0.0, 0.0, 0.0])
                 right_foot_joint_space.append([0.0, 0.0, 0.0])
         
         return (
-            np.array(root_joint_space),
             np.array(left_foot_joint_space),
             np.array(right_foot_joint_space)
         )
     
-    def _convert_joint_to_camera_space(self, joint_space_positions):
-        """Convert positions from joint space to camera space by flipping Y and Z axes."""
-        return np.array([
-            [pos[0], -pos[1], -pos[2]]
-            for pos in joint_space_positions
-        ])
-    
-    def _calculate_foot_world_positions(self, root_trans, root_rot, foot_offset_camera, T):
-        """Calculate foot world positions in camera space."""
-        foot_world = np.zeros((T, 3))
-        for t in range(T):
-            foot_world[t] = root_trans[t] + root_rot[t] @ foot_offset_camera[t]
-        return foot_world
-    
-    def _calculate_foot_velocities(self, foot_offset_camera, foot_joint_space, T, dt, log_print):
-        """Calculate foot offset velocities relative to root."""
+    def _calculate_foot_velocities(self, foot_offset, T, dt, log_print):
+        """Calculate foot offset velocities relative to base."""
         foot_offset_velocity = np.zeros((T, 3))
         for t in range(1, T):
-            foot_offset_velocity[t] = (foot_offset_camera[t] - foot_offset_camera[t-1]) / dt
+            foot_offset_velocity[t] = (foot_offset[t] - foot_offset[t-1]) / dt
         foot_offset_speed = np.linalg.norm(foot_offset_velocity, axis=1)
         return foot_offset_velocity, foot_offset_speed
     
@@ -1867,32 +2115,73 @@ class RefinementManager:
         if foot_position.ndim == 1:
             return np.dot(foot_position, height_dir)
         return np.dot(foot_position, height_dir)
+
+    def _calculate_ground_height_reference(self, base_trans, height_direction, log_print):
+        """Compute per-frame ground height reference using root motion auto-flooring."""
+        height_dir = np.array(height_direction)
+        base_height = np.dot(base_trans, height_dir)
+        valid_mask = np.isfinite(base_height)
+        if np.any(valid_mask):
+            avg_base_height = float(np.mean(base_height[valid_mask]))
+        else:
+            avg_base_height = 0.0
+        auto_floor_offset = -avg_base_height
+        ground_height = base_height + auto_floor_offset
+        log_print(
+            f"Auto-floor (refinement): avg_base_h={avg_base_height:.4f}, "
+            f"auto_floor_offset={auto_floor_offset:.4f}"
+        )
+        return ground_height
+
+    def _log_foot_height_debug(self, foot_label, foot_height, foot_offset_speed,
+                               ground_height, height_threshold, velocity_threshold, log_print):
+        """Log detailed foot height vs ground diagnostics for debugging."""
+        height_delta = foot_height - (ground_height + height_threshold)
+        height_check = height_delta < 0.0
+        velocity_check = foot_offset_speed < velocity_threshold
+        in_contact = height_check & velocity_check
+
+        # Highlight when the foot was below the ground threshold, but maybe was too fast
+        below_indices = np.where(height_check)[0]
+        total_frames = len(foot_height)
+
+        log_print(f"{foot_label} foot height debug:")
+
+        above_deltas = height_delta[below_indices]
+        if above_deltas.size:
+            log_print(
+                f"  Above-ground delta (ground - foot): min={np.min(above_deltas):.4f}m, "
+                f"max={np.max(above_deltas):.4f}m, avg={np.mean(above_deltas):.4f}m"
+            )
+        else:
+            log_print("  Above-ground delta (ground - foot): no below-threshold frames")
+
+        for t in range(total_frames):
+            log_print(
+                f"  t={t:04d} foot_h={foot_height[t]:.4f} "
+                f"ground_h={ground_height[t]:.4f} "
+                f"delta={height_delta[t]:.4f} "
+                f"speed={foot_offset_speed[t]:.4f} h_thr={height_threshold:.4f} v_thr={velocity_threshold:.4f} "
+                f"height_ok={height_check[t]} vel_ok={velocity_check[t]} "
+                f"in_contact={in_contact[t]}"
+            )
     
-    def _detect_foot_contact(self, root_trans, foot_height, foot_offset_speed, ground_height, velocity_threshold):
+    def _detect_foot_contact(self, foot_height, foot_offset_speed, ground_height, height_threshold, velocity_threshold):
         """Detect foot contact based on height and velocity thresholds.
         
         Args:
-            root_trans: Root translation in camera space
             foot_height: Height value(s) from _calculate_foot_height (positive = higher)
             foot_offset_speed: Foot velocity relative to root
-            ground_height: Ground level height (positive = above origin, negative = below)
+            ground_height: Per-frame ground height reference
+            height_threshold: Maximum height above ground to count as contact
             velocity_threshold: Maximum velocity for contact
         
         Returns:
             Boolean array indicating contact
         """
-
-        # Root translation is in camera space, it gives the "height" of the root as 1 - Y, averaging 1.
-        # I don't know why this is, but it seems consistent across all test cases. This implies the following adjustments are required:
-        # 1 - 1.0 = 0 meaning 0 is the ground height, so the person is standing normally. The new ground height needs to be 0.1 - 0 = 0.1
-        # 1 - 0.5 = 0.5, so the person is jumping, The new ground height needs to be 0.1 - 0.5 = -0.4
-        # 1 - 1.5 = -0.5, so the person is squatting, the new ground height needs to be 0.1 - (-0.5) = 0.6
-        # We need to convert this to get "ground level", offsetting the foot height by this ground height
-
-        root_world_y = 1 - root_trans[:, 1]
-        world_ground_height = ground_height - root_world_y
-
-        height_check = foot_height <= world_ground_height
+        # Find whether the foot_height is above or below the ground (plus some foot threshold to solidify 'lifted' foot)
+        height_delta = foot_height - (ground_height + height_threshold)
+        height_check = height_delta < 0.0
         velocity_check = foot_offset_speed < velocity_threshold
         return height_check & velocity_check
     
@@ -1917,11 +2206,11 @@ class RefinementManager:
                 confidence[t] = vel_score
         return confidence
     
-    def _lock_foot_on_contact_start(self, foot_contact, was_in_contact, curr_root, root_rot, foot_offset_camera, t, log_print, foot_name):
+    def _lock_foot_on_contact_start(self, foot_contact, was_in_contact, curr_root, root_rot, foot_offset_world, t, log_print, foot_name):
         """Lock foot position when contact starts."""
         if not (foot_contact and not was_in_contact):
             return None
-        foot_world = curr_root + root_rot[t] @ foot_offset_camera[t]
+        foot_world = curr_root + root_rot[t] @ foot_offset_world[t]
         # Per-frame logging removed - summary will be printed at the end
         return foot_world.copy()
     
@@ -1941,118 +2230,124 @@ class RefinementManager:
             return (True, False)
         return (False, True)
     
-    def _adjust_root_for_locked_foot(self, curr_root, locked_foot_pos, root_rot, foot_offset_camera, blend_factor, t, log_print, foot_name):
+    def _adjust_base_for_locked_foot(self, curr_root, locked_foot_pos, root_rot, foot_offset_world, blend_factor, t, log_print, foot_name):
         """Adjust root position to maintain locked foot position."""
-        desired_root = locked_foot_pos - root_rot[t] @ foot_offset_camera[t]
+        desired_root = locked_foot_pos - root_rot[t] @ foot_offset_world[t]
         root_adjustment = desired_root - curr_root
         adjusted_root = curr_root + root_adjustment * blend_factor
         # Per-frame logging removed - summary will be printed at the end
         return adjusted_root
     
-    def _smooth_root_motion(self, root_trans, window_size):
+    def _smooth_base_motion(self, base_trans, window_size):
         """Smooth root motion using moving average."""
         if window_size <= 1:
-            return root_trans
-        smoothed = root_trans.copy()
+            return base_trans
+        smoothed = base_trans.copy()
         kernel = np.ones(window_size) / window_size
         for dim in range(3):
             # Use edge padding instead of zero padding to prevent drift to 0,0,0 at boundaries
             # This ensures the last frames maintain their position instead of being averaged with zeros
             pad_width = window_size // 2
-            padded = np.pad(root_trans[:, dim], pad_width, mode='edge')
+            padded = np.pad(base_trans[:, dim], pad_width, mode='edge')
             convolved = np.convolve(padded, kernel, mode='valid')
             smoothed[:, dim] = convolved
         return smoothed
     
-    def _foot_planting_adjustment(self, root_motion, joint_coords_series, log_print):
+    def _foot_planting_adjustment(self, base_motion, joint_coords_series, log_print):
         """
         Adjust root motion based on foot contact to reduce jitter.
         
         Coordinate systems:
         - Joint space: negative Y is "up", coordinates are absolute relative to body_world at [0,0,0]
-        - Camera space (root_motion): positive Y is "up"
+        - Camera space (base_motion): positive Y is "up"
         - Conversion: camera = [joint[0], -joint[1], -joint[2]]
         
         Args:
-            root_motion: dict with "translation" [T][3] (camera space) and "rotation" [T][3][3]
+            base_motion: dict with "translation" [T][3] (camera space) and "rotation" [T][3][3]
             joint_coords_series: [T][num_joints][3] - joint coordinates per frame (absolute in joint space, relative to body_world)
         
         Returns:
-            Adjusted root_motion dict with corrected translation
+            Adjusted base_motion dict with corrected translation
         """
         if not self.config.do_foot_planting:
-            return root_motion
+            return base_motion
         
         log_print("\n" + "="*80)
         log_print("FOOT PLANTING")
         log_print("="*80)
         
-        if not self._validate_foot_planting_inputs(root_motion, joint_coords_series, log_print):
-            return root_motion
-        
-        # Handle None values: interpolate if enabled, otherwise forward-fill from previous valid frame
-        if self.config.do_interpolate_missing_keyframes:
-            if any(t is None for t in root_motion["translation"]):
-                root_motion["translation"] = self._interpolate_missing_frames(root_motion["translation"], is_rotation=False)
-            if "rotation" in root_motion and root_motion["rotation"] is not None:
-                if any(r is None for r in root_motion["rotation"]):
-                    root_motion["rotation"] = self._interpolate_missing_frames(root_motion["rotation"], is_rotation=True)
-        else:
-            # Forward-fill from previous valid frame, or return if no valid frames exist
-            filled_trans = self._fill_none_values(root_motion["translation"], is_rotation=False)
-            if filled_trans is None:
-                log_print("WARNING: No valid translation frames found, skipping foot planting")
-                return root_motion
-            root_motion["translation"] = filled_trans
-            
-            if "rotation" in root_motion and root_motion["rotation"] is not None:
-                filled_rot = self._fill_none_values(root_motion["rotation"], is_rotation=True)
-                if filled_rot is None:
-                    log_print("WARNING: No valid rotation frames found, skipping foot planting")
-                    return root_motion
-                root_motion["rotation"] = filled_rot
+        if not self._validate_foot_planting_inputs(base_motion, joint_coords_series, log_print):
+            return base_motion
         
         fp_config = self.config.foot_planting_config
-        T = len(root_motion["translation"])
+        T = len(base_motion["translation"])
+
+        print(f"T: {T}")
         
         try:
-            root_idx, l_contact_idx, r_contact_idx = self._get_foot_contact_indices(fp_config, log_print)
+            l_contact_idx, r_contact_idx = self._get_foot_contact_indices(fp_config, log_print)
         except ValueError as e:
             log_print(f"ERROR: Joint names not found: {e}")
-            return root_motion
+            return base_motion
         
-        root_trans = np.array(root_motion["translation"])
-        root_rot = np.array(root_motion["rotation"])
+        base_trans = np.array(base_motion["translation"])
+        base_rot = np.array(base_motion["rotation"])
         
-        root_joint_space, left_foot_joint_space, right_foot_joint_space = self._extract_joint_positions(
-            joint_coords_series, T, root_idx, l_contact_idx, r_contact_idx
+        left_foot_joint_space, right_foot_joint_space = self._extract_joint_positions(
+            joint_coords_series, T, l_contact_idx, r_contact_idx
         )
-        
-        root_camera_space = self._convert_joint_to_camera_space(root_joint_space)
-        left_foot_camera_space = self._convert_joint_to_camera_space(left_foot_joint_space)
-        right_foot_camera_space = self._convert_joint_to_camera_space(right_foot_joint_space)
-        
-        left_foot_offset_camera = left_foot_camera_space - root_camera_space
-        right_foot_offset_camera = right_foot_camera_space - root_camera_space
-        
-        # Calculate foot offset in joint space for velocity (no jitter from pred_cam_t)
-        left_foot_offset_joint = left_foot_joint_space - root_joint_space
-        right_foot_offset_joint = right_foot_joint_space - root_joint_space
+
+        left_foot_world_space = left_foot_joint_space + base_trans
+        right_foot_world_space = right_foot_joint_space + base_trans
         
         # Calculate velocity from joint space (pred_coords delta) to avoid jitter from pred_cam_t
-        _, left_foot_offset_speed = self._calculate_foot_velocities(left_foot_offset_joint, left_foot_joint_space, T, self.dt, log_print)
-        _, right_foot_offset_speed = self._calculate_foot_velocities(right_foot_offset_joint, right_foot_joint_space, T, self.dt, log_print)
-        
+        # since we're tryping to assist base jitter, we should use the joint space velocity instead of the camera space velocity
+        _, left_foot_offset_speed = self._calculate_foot_velocities(left_foot_joint_space, T, self.dt, log_print)
+        _, right_foot_offset_speed = self._calculate_foot_velocities(right_foot_joint_space, T, self.dt, log_print)
+                
         velocity_threshold = fp_config.foot_contact_velocity_threshold
         height_threshold = fp_config.foot_contact_min_height
         height_direction = np.array(fp_config.height_direction)
-        ground_height = height_threshold
+        ground_height = self._calculate_ground_height_reference(base_trans, height_direction, log_print)
+        
         
         left_foot_height = self._calculate_foot_height(left_foot_joint_space, height_direction)
         right_foot_height = self._calculate_foot_height(right_foot_joint_space, height_direction)
+
+        # Extensive debug logs for foot height vs ground checks
+        self._log_foot_height_debug(
+            "LEFT",
+            left_foot_height,
+            left_foot_offset_speed,
+            ground_height,
+            height_threshold,
+            velocity_threshold,
+            log_print
+        )
+        self._log_foot_height_debug(
+            "RIGHT",
+            right_foot_height,
+            right_foot_offset_speed,
+            ground_height,
+            height_threshold,
+            velocity_threshold,
+            log_print
+        )
         
-        left_in_contact = self._detect_foot_contact(root_trans, left_foot_height, left_foot_offset_speed, ground_height, velocity_threshold)
-        right_in_contact = self._detect_foot_contact(root_trans, right_foot_height, right_foot_offset_speed, ground_height, velocity_threshold)
+        left_in_contact = self._detect_foot_contact(
+            left_foot_height,
+            left_foot_offset_speed,
+            ground_height,
+            height_threshold,
+            velocity_threshold
+        )
+        right_in_contact = self._detect_foot_contact(
+            right_foot_height,
+            right_foot_offset_speed,
+            ground_height,
+            height_threshold,
+            velocity_threshold
+        )
         
         left_in_contact = self._smooth_contact_detection(left_in_contact, fp_config.contact_smoothing_window)
         right_in_contact = self._smooth_contact_detection(right_in_contact, fp_config.contact_smoothing_window)
@@ -2064,9 +2359,9 @@ class RefinementManager:
         log_print(f"Contact summary: Left {np.sum(left_in_contact)}/{T} frames ({100.0*np.sum(left_in_contact)/T:.1f}%), "
                   f"Right {np.sum(right_in_contact)}/{T} frames ({100.0*np.sum(right_in_contact)/T:.1f}%)")
         
-        adjusted_root_trans, foot_planting_stats = self._adjust_root_for_foot_planting(
-            root_trans, root_rot, left_in_contact, right_in_contact,
-            left_foot_offset_camera, right_foot_offset_camera,
+        adjusted_base_trans, foot_planting_stats = self._adjust_base_for_foot_planting(
+            base_trans, base_rot, left_in_contact, right_in_contact,
+            left_foot_world_space, right_foot_world_space,
             left_contact_confidence, right_contact_confidence,
             fp_config.blend_factor, T, log_print
         )
@@ -2082,25 +2377,24 @@ class RefinementManager:
         log_print(f"  Frames with feet planted: {frames_with_contact}/{total_frames} ({contact_percentage:.1f}%)")
         log_print(f"  Frames without feet planted: {frames_without_contact}/{total_frames} ({no_contact_percentage:.1f}%)")
         
-        adjusted_before_smooth = adjusted_root_trans.copy()
-        adjusted_root_trans = self._smooth_root_motion(adjusted_root_trans, fp_config.root_smoothing_window)
+        adjusted_base_trans = self._smooth_base_motion(adjusted_base_trans, fp_config.root_smoothing_window)
         
-        max_adjustment = np.max(np.abs(adjusted_root_trans - root_trans))
-        avg_adjustment = np.mean(np.abs(adjusted_root_trans - root_trans))
+        max_adjustment = np.max(np.abs(adjusted_base_trans - base_trans))
+        avg_adjustment = np.mean(np.abs(adjusted_base_trans - base_trans))
         log_print(f"\nRoot adjustment: max={max_adjustment:.4f}m, avg={avg_adjustment:.4f}m")
         log_print("="*80 + "\n")
         
         return {
-            "translation": adjusted_root_trans.tolist(),
-            "rotation": root_motion["rotation"]
+            "translation": adjusted_base_trans.tolist(),
+            "rotation": base_motion["rotation"]
         }
     
-    def _adjust_root_for_foot_planting(self, root_trans, root_rot, left_in_contact, right_in_contact,
-                                     left_foot_offset_camera, right_foot_offset_camera,
+    def _adjust_base_for_foot_planting(self, base_trans, base_rot, left_in_contact, right_in_contact,
+                                     left_foot_offset_world, right_foot_offset_world,
                                      left_contact_confidence, right_contact_confidence,
                                      blend_factor, T, log_print):
         """Adjust root motion based on locked foot positions."""
-        adjusted_root_trans = root_trans.copy()
+        adjusted_base_trans = base_trans.copy()
         left_foot_locked_pos = None
         right_foot_locked_pos = None
         
@@ -2109,20 +2403,20 @@ class RefinementManager:
         frames_without_contact = 0
         
         for t in range(T):
-            curr_root = self._get_current_root_position(adjusted_root_trans, root_trans, t)
+            curr_root = self._get_current_base_position(adjusted_base_trans, base_trans, t)
             left_contact = left_in_contact[t]
             right_contact = right_in_contact[t]
             left_was_in_contact = left_in_contact[t-1] if t > 0 else False
             right_was_in_contact = right_in_contact[t-1] if t > 0 else False
             
             new_left_locked = self._lock_foot_on_contact_start(
-                left_contact, left_was_in_contact, curr_root, root_rot, left_foot_offset_camera, t, log_print, "LEFT"
+                left_contact, left_was_in_contact, curr_root, base_rot, left_foot_offset_world, t, log_print, "LEFT"
             )
             if new_left_locked is not None:
                 left_foot_locked_pos = new_left_locked
             
             new_right_locked = self._lock_foot_on_contact_start(
-                right_contact, right_was_in_contact, curr_root, root_rot, right_foot_offset_camera, t, log_print, "RIGHT"
+                right_contact, right_was_in_contact, curr_root, base_rot, right_foot_offset_world, t, log_print, "RIGHT"
             )
             if new_right_locked is not None:
                 right_foot_locked_pos = new_right_locked
@@ -2137,9 +2431,9 @@ class RefinementManager:
             else:
                 frames_without_contact += 1
             
-            adjusted_root_trans[t] = self._apply_root_adjustment_for_frame(
+            adjusted_base_trans[t] = self._apply_base_adjustment_for_frame(
                 curr_root, left_foot_locked_pos, right_foot_locked_pos,
-                root_rot, left_foot_offset_camera, right_foot_offset_camera,
+                base_rot, left_foot_offset_world, right_foot_offset_world,
                 left_contact_confidence, right_contact_confidence,
                 blend_factor, t, log_print
             )
@@ -2148,17 +2442,17 @@ class RefinementManager:
             'frames_with_contact': frames_with_contact,
             'frames_without_contact': frames_without_contact
         }
-        return adjusted_root_trans, stats
+        return adjusted_base_trans, stats
     
-    def _get_current_root_position(self, adjusted_root_trans, root_trans, t):
+    def _get_current_base_position(self, adjusted_base_trans, root_trans, t):
         """Get current root position for frame t."""
         if t == 0:
             return root_trans[t].copy()
-        curr_root = adjusted_root_trans[t-1].copy()
+        curr_root = adjusted_base_trans[t-1].copy()
         return curr_root + (root_trans[t] - root_trans[t-1])
     
-    def _apply_root_adjustment_for_frame(self, curr_root, left_foot_locked_pos, right_foot_locked_pos,
-                                        root_rot, left_foot_offset_camera, right_foot_offset_camera,
+    def _apply_base_adjustment_for_frame(self, curr_root, left_foot_locked_pos, right_foot_locked_pos,
+                                        root_rot, left_foot_offset_world, right_foot_offset_world,
                                         left_contact_confidence, right_contact_confidence,
                                         blend_factor, t, log_print):
         """Apply root adjustment for a single frame."""
@@ -2172,14 +2466,14 @@ class RefinementManager:
         )
         
         if use_left:
-            adjusted = self._adjust_root_for_locked_foot(
-                curr_root, left_foot_locked_pos, root_rot, left_foot_offset_camera, blend_factor, t, log_print, "LEFT"
+            adjusted = self._adjust_base_for_locked_foot(
+                curr_root, left_foot_locked_pos, root_rot, left_foot_offset_world, blend_factor, t, log_print, "LEFT"
             )
             return adjusted
         
         if use_right:
-            adjusted = self._adjust_root_for_locked_foot(
-                curr_root, right_foot_locked_pos, root_rot, right_foot_offset_camera, blend_factor, t, log_print, "RIGHT"
+            adjusted = self._adjust_base_for_locked_foot(
+                curr_root, right_foot_locked_pos, root_rot, right_foot_offset_world, blend_factor, t, log_print, "RIGHT"
             )
             return adjusted
         
